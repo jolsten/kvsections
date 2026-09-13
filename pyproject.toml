@@ -1,0 +1,27 @@
+[project]
+name = "kvsections"
+version = "0.1.0"
+description = "Parse files with a specific key-value format."
+readme = "README.md"
+authors = [
+    { name = "Jonathan Olsten", email = "jonathan.olsten@gmail.com" }
+]
+requires-python = ">=3.9"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=7", "ruff"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
