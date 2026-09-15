@@ -80,6 +80,23 @@ Do not reverse these without asking.
     where it fits (`textwrap`). No CLI; the old entry point was removed on
     purpose.
 
+## CI and releases
+
+- `.github/workflows/ci.yml` runs the four commands above on every push and
+  pull request: lint and mypy on Ubuntu, pytest across Ubuntu, Windows and
+  macOS on Python 3.9 to 3.13, plus a wheel build and import. It uses
+  `uv sync --locked`, so commit `uv.lock` whenever `pyproject.toml` changes.
+- `.github/workflows/release.yml` publishes to PyPI on a `v*` tag through
+  trusted publishing (no token). Release = `git tag vX.Y.Z && git push --tags`.
+- The version is derived from git tags by hatch-vcs (hatchling backend);
+  nothing in the repo states it, `__version__` reads installed metadata, and
+  `uv version` does not apply. Checkouts that build need the tags
+  (`fetch-depth: 0` in workflows).
+- `.gitattributes` stores source as LF and `tests/samples/**` verbatim.
+  The owner's git uses `core.autocrlf=input`, so without that rule CRLF
+  samples would be committed as LF and the byte-exact tests would fail on
+  a fresh clone.
+
 ## Conventions and pitfalls
 
 - Sample files: any `tests/samples/*.txt` is picked up automatically and

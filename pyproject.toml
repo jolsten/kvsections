@@ -1,6 +1,6 @@
 [project]
 name = "kvsections"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Read and write fixed-width text files made of named sections of KEY=VALUE pairs."
 readme = "README.md"
 authors = [
@@ -51,5 +51,13 @@ select = ["E", "F", "W", "I", "UP", "B"]
 line-ending = "lf"
 
 [build-system]
-requires = ["uv_build>=0.12.5,<0.13.0"]
-build-backend = "uv_build"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+# The version comes from the git tag (vX.Y.Z); untagged commits build as
+# X.Y.Z+1.devN+g<hash>. Nothing in the repository states the version.
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kvsections"]

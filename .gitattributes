@@ -1,0 +1,5 @@
+# Source and docs are LF everywhere; ruff enforces it and Windows checkouts
+# must not convert them. Sample files are fixtures whose line endings are
+# part of the test, so git must store and check them out verbatim.
+* text=auto eol=lf
+tests/samples/** -text

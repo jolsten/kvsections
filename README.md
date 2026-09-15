@@ -1,5 +1,7 @@
 # kvsections
 
+[![CI](https://github.com/jolsten/kvsections/actions/workflows/ci.yml/badge.svg)](https://github.com/jolsten/kvsections/actions/workflows/ci.yml)
+
 Read and write files made of named sections holding `KEY=VALUE` pairs.
 
 ```
@@ -279,3 +281,18 @@ automatically and must parse without raising, round-trip through the model,
 and survive the layout helpers unchanged in content; a sample whose name
 starts with `golden` must also be reproduced byte for byte from its detected
 layout. Drop a file into the directory to add it to the suite.
+
+CI runs the same four commands on every push and pull request, across
+Linux, Windows and macOS on Python 3.9 to 3.13, and builds the wheel.
+
+### Releasing
+
+Releases publish to PyPI from GitHub Actions through trusted publishing, so
+no API token is stored. The version is derived from the git tag by
+hatch-vcs, so nothing in the repository needs bumping. To cut one:
+
+```
+git tag v0.2.0 && git push --tags
+```
+
+Untagged commits build as development versions such as `0.2.1.dev3+g1a2b3c4`.

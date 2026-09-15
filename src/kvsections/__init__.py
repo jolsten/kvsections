@@ -31,13 +31,18 @@ for dates, times, zero-padded numbers and flags live in
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
+
 from .document import Document, SectionField
 from .errors import ParseError, ParseWarning
 from .fields import Converter, Field
 from .layout import reorder_records, wrap_records
 from .model import BaseSection, Section, TextSection
 
-__version__ = "0.1.0"
+try:
+    __version__ = version("kvsections")
+except PackageNotFoundError:  # pragma: no cover - only when not installed
+    __version__ = "0+unknown"
 
 __all__ = [
     "BaseSection",
