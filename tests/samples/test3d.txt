@@ -1,0 +1,12 @@
+VOLUME      CLASSIFICATION=UNCLASSIFIED NUMBER=1234567890 CREATION=032102       
+            BYTE=MSBF                                                           
+FILE        CLASSIFICATION=UNCLASSIFIED NUMBER=1234567890 CREATION=032102       
+            BLOCK=4096 RBPL=2 RBRP=3                                            
+EVENT       VEHICLE=TSAT DATE=001028 SPUT=TSAT ORBIT=00000 TYPE=TSAT            
+SIGNAL      DESIGNATOR=S000D FREQUENCY=3018.0 UPTIME=124440 DOWNTIME=124533     
+INPUT       COLLECTOR=TEST ANALOG=NONE                                          
+SELECTOR    NUMBER=1                                                            
+PROCESSOR   NAME=SASI VERSION=1 TYPE=INTERNAL CHANNELS=64 NOMINAL=255 RATE=1.0  
+RECORD      RRLN=38 RRPL=6 AUXILIARY=TIM1,TIM2,TIM3,TIMP WORD=8 RDPL=0 RDRC=1   
+            RDID=10 RDES=64 RDST=1 RDIN=1                                       
+OUTPUT      TYPE=PCM                                                            

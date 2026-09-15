@@ -2,28 +2,26 @@
 
 Unlike the reader, the writer refuses anything that would not read back
 correctly: names and keys must be upper-case printable ASCII without spaces
-or ``=``, values must contain no whitespace, and every pair must fit on one
-line.
+or ``=``, and values must contain no whitespace. Record width is a
+convention rather than a limit: a pair or word that cannot fit is written
+on a record of its own, longer than the width.
 """
 
 from __future__ import annotations
 
-import textwrap
 from typing import TYPE_CHECKING
 
-from .model import Section, TextSection
+from .model import BaseSection, Section, TextSection
+from .records import TEXT_CHARS, TOKEN_CHARS, pack
 
 if TYPE_CHECKING:
     from .document import Document
-
-_TOKEN_CHARS = frozenset(chr(c) for c in range(0x21, 0x7F))
-_TEXT_CHARS = _TOKEN_CHARS | {" "}
 
 
 def _check_token(token: str, what: str) -> None:
     if not isinstance(token, str):
         raise TypeError(f"{what} must be a str, not {type(token).__name__}")
-    if not set(token) <= _TOKEN_CHARS:
+    if not set(token) <= TOKEN_CHARS:
         raise ValueError(
             f"{what} {token!r} contains whitespace or non-ASCII characters"
         )
@@ -53,46 +51,37 @@ def pack_pairs(section: Section, available: int | None) -> list[str]:
         pairs.append(f"{key}={format_value(key, value)}")
     if available is None:
         return [" ".join(pairs)] if pairs else []
-
-    lines: list[str] = []
-    current: list[str] = []
-    length = 0
-    for pair in pairs:
-        if len(pair) > available:
-            raise ValueError(
-                f"{pair!r} in section {section.name} is longer than the "
-                f"{available} columns available for content"
-            )
-        if current and length + 1 + len(pair) > available:
-            lines.append(" ".join(current))
-            current, length = [], 0
-        length += len(pair) + (1 if current else 0)
-        current.append(pair)
-    if current:
-        lines.append(" ".join(current))
-    return lines
+    return pack(pairs, available)
 
 
 def text_lines(section: TextSection, available: int | None) -> list[str]:
     """Render a text section's lines, word-wrapping any that are too long."""
-    if not isinstance(section.text, str):
+    text = section.text
+    if not isinstance(text, str):
         raise TypeError(f"text of section {section.name} must be a str")
+    bad = set(text) - TEXT_CHARS - {"\n"}
+    if bad:
+        raise ValueError(
+            f"text of section {section.name} contains control or non-ASCII "
+            f"characters: {''.join(sorted(bad))!r}"
+        )
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
     out: list[str] = []
-    for line in section.text.splitlines():
-        if not set(line) <= _TEXT_CHARS:
-            raise ValueError(
-                f"text of section {section.name} contains control or non-ASCII "
-                f"characters: {line!r}"
-            )
+    for line in lines:
+        words = line.split()
         if available is None or len(line) <= available:
             out.append(line)
+        elif not words:
+            out.append("")
         else:
-            out.extend(
-                textwrap.wrap(
-                    line, available, break_long_words=True, break_on_hyphens=False
-                )
-                or [""]
-            )
+            lead = line[: len(line) - len(line.lstrip())]
+            room = available - len(lead)
+            if room < 1:
+                out.append(line)
+            else:
+                out.extend(lead + piece for piece in pack(words, room, break_long=True))
     return out
 
 
@@ -102,7 +91,7 @@ def format_document(
     width: int | None = 80,
     margin: int = 1,
     indent: int | None = None,
-    newline: str = "\r\n",
+    newline: str = "\n",
 ) -> str:
     """Render ``doc`` as text.
 
@@ -116,6 +105,9 @@ def format_document(
             raise ValueError("width must be at least 1")
         if margin < 0 or margin >= width:
             raise ValueError(f"margin must be between 0 and {width - 1}")
+    for section in doc.sections.values():
+        if not isinstance(section, BaseSection):
+            raise TypeError(f"{section!r} is not a section")
     names = [section.name for section in doc.sections.values()]
     if indent is None:
         indent = max((len(name) for name in names), default=0) + 1
@@ -130,6 +122,14 @@ def format_document(
     out: list[str] = []
     for section in doc.sections.values():
         _check_name(section.name, "section name")
+        expected = type(doc).section_type_for(section.name)
+        if issubclass(expected, TextSection) != isinstance(section, TextSection):
+            kind = (
+                "free text" if issubclass(expected, TextSection) else "key/value pairs"
+            )
+            raise ValueError(
+                f"section {section.name} must hold {kind} in a {type(doc).__name__}"
+            )
         if len(section.name) >= indent:
             raise ValueError(
                 f"section name {section.name} does not fit in an indent "
@@ -137,10 +137,9 @@ def format_document(
             )
         if isinstance(section, TextSection):
             body = text_lines(section, available)
-        elif isinstance(section, Section):
-            body = pack_pairs(section, available)
         else:
-            raise TypeError(f"{section!r} is not a Section or TextSection")
+            assert isinstance(section, Section)
+            body = pack_pairs(section, available)
         for index, content in enumerate(body or [""]):
             lead = section.name.ljust(indent) if index == 0 else " " * indent
             line = (lead + content).rstrip()

@@ -12,44 +12,57 @@ not checked.
 
 from __future__ import annotations
 
-import re
-from typing import TYPE_CHECKING, Callable, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
-from .model import AnySection, ParseError, ParseWarning, Section, TextSection
+from .errors import ParseError, ParseWarning
+from .model import BaseSection, Section, TextSection
+from .records import BLANK, CONTINUATION, TEXT_CHARS, TOKEN_CHARS, split_records
 
 if TYPE_CHECKING:
     from .document import Document
 
 _D = TypeVar("_D", bound="Document")
 
-_LINE_BREAK = re.compile(r"\r\n|\r|\n")
-_HEADER = re.compile(r"\S+\s*")
 
-Warn = Callable[[int, str], None]
+class _Reporter:
+    """Records what the reader tolerates, or raises at the first problem."""
+
+    def __init__(self, doc: Document, strict: bool):
+        self.doc = doc
+        self.strict = strict
+
+    def warn(self, lineno: int, message: str) -> None:
+        if self.strict:
+            raise ParseError(lineno, message)
+        self.doc.warnings.append(ParseWarning(lineno, message))
+
+    def check_chars(
+        self, lineno: int, text: str, allowed: frozenset[str], what: str
+    ) -> None:
+        """Warn when ``text`` holds characters the writer would refuse."""
+        if not set(text) <= allowed:
+            self.warn(
+                lineno,
+                f"{what} {text!r} contains characters that cannot be written back",
+            )
 
 
-def split_lines(text: str) -> list[str]:
-    """Split on CRLF, LF or CR, dropping the empty piece after a final newline."""
-    lines = _LINE_BREAK.split(text)
-    if lines and lines[-1] == "":
-        lines.pop()
-    return lines
-
-
-def parse_pairs(section: Section, content: str, lineno: int, warn: Warn) -> None:
+def parse_pairs(section: Section, content: str, lineno: int, report: _Reporter) -> None:
     """Add the ``KEY=VALUE`` tokens found in ``content`` to ``section``."""
     for token in content.split():
         key, equals, value = token.partition("=")
         if not key:
-            warn(lineno, f"{token!r} has no key; ignored")
+            report.warn(lineno, f"{token!r} has no key; ignored")
             continue
         if not equals:
-            warn(lineno, f"{token!r} has no '='; stored with an empty value")
+            report.warn(lineno, f"{token!r} has no '='; stored with an empty value")
         if key != key.upper():
-            warn(lineno, f"key {key!r} is not upper-case; normalized")
+            report.warn(lineno, f"key {key!r} is not upper-case; normalized")
             key = key.upper()
+        report.check_chars(lineno, key, TOKEN_CHARS, "key")
+        report.check_chars(lineno, value, TOKEN_CHARS, f"value of {key}")
         if key in section.fields:
-            warn(
+            report.warn(
                 lineno,
                 f"duplicate key {key} in section {section.name}; last value wins",
             )
@@ -64,14 +77,19 @@ class _TextBuffer:
         self.content_col = content_col
         self.lines: list[str] = []
 
-    def add(self, line: str) -> None:
-        """Add a continuation line, stripping the layout indent but not more."""
+    def add(self, line: str) -> str:
+        """Add a continuation line, stripping the layout indent but not more.
+
+        Returns the content that was kept.
+        """
         if self.content_col is None:
             self.content_col = len(line) - len(line.lstrip())
         if line[: self.content_col].strip():
-            self.lines.append(line.lstrip())
+            content = line.lstrip()
         else:
-            self.lines.append(line[self.content_col :])
+            content = line[self.content_col :]
+        self.lines.append(content)
+        return content
 
     def flush(self) -> None:
         lines = self.lines
@@ -89,63 +107,66 @@ class _TextBuffer:
 def parse(document_type: type[_D], text: str, *, strict: bool = False) -> _D:
     """Parse ``text`` into a new instance of ``document_type``."""
     doc = document_type()
+    report = _Reporter(doc, strict)
 
-    def warn(lineno: int, message: str) -> None:
-        if strict:
-            raise ParseError(lineno, message)
-        doc.warnings.append(ParseWarning(lineno, message))
+    if text.startswith("\ufeff"):
+        report.warn(1, "UTF-8 byte order mark ignored")
+        text = text[1:]
 
-    current: AnySection | None = None
+    current: BaseSection | None = None
     buffer: _TextBuffer | None = None
 
     def continuation(line: str, lineno: int) -> None:
         if current is None:
-            warn(lineno, "content before the first section header; ignored")
+            report.warn(lineno, "content before the first section header; ignored")
         elif buffer is not None:
-            buffer.add(line)
+            report.check_chars(lineno, buffer.add(line), TEXT_CHARS, "text")
         else:
             assert isinstance(current, Section)
-            parse_pairs(current, line, lineno, warn)
+            parse_pairs(current, line, lineno, report)
 
-    for lineno, raw in enumerate(split_lines(text), 1):
-        line = raw.rstrip()
-        if not line:
+    for lineno, record in enumerate(split_records(text), 1):
+        if record.kind == BLANK:
             if buffer is not None:
                 buffer.lines.append("")
             continue
-        if line[0].isspace():
+        line = record.prefix + record.content
+        if record.kind == CONTINUATION:
+            if not record.prefix:
+                report.warn(
+                    lineno, "line has no section name; treated as a continuation"
+                )
             continuation(line, lineno)
             continue
 
-        match = _HEADER.match(line)
-        assert match is not None
-        name = match.group().rstrip()
-        rest = line[match.end() :]
-        if "=" in name:
-            warn(lineno, "line has no section name; treated as a continuation")
-            continuation(line, lineno)
-            continue
+        name = record.name
+        rest = record.content
 
         if buffer is not None:
             buffer.flush()
             buffer = None
         if name != name.upper():
-            warn(lineno, f"section name {name!r} is not upper-case; normalized")
+            report.warn(lineno, f"section name {name!r} is not upper-case; normalized")
             name = name.upper()
+        report.check_chars(lineno, name, TOKEN_CHARS, "section name")
         canonical = document_type.canonical_name(name)
         existing = doc.sections.get(canonical)
         if existing is not None:
             what = name if name == canonical else f"{name} (alias of {canonical})"
-            warn(lineno, f"duplicate section {what}; merged into the earlier one")
+            report.warn(
+                lineno, f"duplicate section {what}; merged into the earlier one"
+            )
             current = existing
         else:
             current = doc.add(document_type.new_section(name))
 
         if isinstance(current, TextSection):
-            buffer = _TextBuffer(current, match.end() if rest else None)
+            buffer = _TextBuffer(current, record.content_col if rest else None)
             buffer.lines.append(rest)
+            report.check_chars(lineno, rest, TEXT_CHARS, "text")
         else:
-            parse_pairs(current, rest, lineno, warn)
+            assert isinstance(current, Section)
+            parse_pairs(current, rest, lineno, report)
 
     if buffer is not None:
         buffer.flush()

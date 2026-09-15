@@ -18,11 +18,15 @@ raises ``ValueError`` when read, and a value that cannot be written raises
 
 from __future__ import annotations
 
+import operator
+from collections.abc import Callable
 from datetime import date, datetime, time
 from enum import Enum
-from typing import Any
+from typing import Any, TypeVar
 
-from .model import Converter
+from .fields import Converter
+
+E = TypeVar("E", bound=Enum)
 
 __all__ = [
     "date_format",
@@ -48,44 +52,63 @@ __all__ = [
 # -- dates and times ---------------------------------------------------------
 
 
-def date_format(fmt: str, name: str | None = None) -> Converter:
-    """Dates written with a ``strftime`` pattern, e.g. ``date_format("%y%m%d")``."""
+def _checked(fmt: str, parse: Callable[[str], Any]) -> Callable[[Any], str]:
+    """A ``strftime`` formatter that refuses values which would not read back."""
+
+    def format(value: Any) -> str:
+        text: str = value.strftime(fmt)
+        if parse(text) != value:
+            raise ValueError(
+                f"{value!r} cannot be written with {fmt!r}: {text!r} reads back "
+                f"as {parse(text)!r}"
+            )
+        return text
+
+    return format
+
+
+def date_format(fmt: str, name: str | None = None) -> Converter[date]:
+    """Dates written with a ``strftime`` pattern, e.g. ``date_format("%y%m%d")``.
+
+    Two-digit years follow Python's rule: ``69`` to ``99`` are 1969 to 1999
+    and ``00`` to ``68`` are 2000 to 2068, in both directions. Writing a date
+    the pattern cannot represent raises ``ValueError``.
+    """
 
     def parse(text: str) -> date:
         return datetime.strptime(text, fmt).date()
 
-    def format(value: date) -> str:
-        return value.strftime(fmt)
-
-    return Converter(parse, format, name or f"date_format({fmt!r})")
+    return Converter(parse, _checked(fmt, parse), name or f"date_format({fmt!r})")
 
 
-def time_format(fmt: str, name: str | None = None) -> Converter:
-    """Times of day written with a ``strftime`` pattern, e.g. ``"%H%M%S"``."""
+def time_format(fmt: str, name: str | None = None) -> Converter[time]:
+    """Times of day written with a ``strftime`` pattern, e.g. ``"%H%M%S"``.
+
+    Writing a time the pattern cannot represent, such as one with microseconds
+    under ``%H%M%S``, raises ``ValueError``.
+    """
 
     def parse(text: str) -> time:
         return datetime.strptime(text, fmt).time()
 
-    def format(value: time) -> str:
-        return value.strftime(fmt)
-
-    return Converter(parse, format, name or f"time_format({fmt!r})")
+    return Converter(parse, _checked(fmt, parse), name or f"time_format({fmt!r})")
 
 
-def datetime_format(fmt: str, name: str | None = None) -> Converter:
-    """Timestamps written with a ``strftime`` pattern, e.g. ``"%Y%m%d%H%M%S"``."""
+def datetime_format(fmt: str, name: str | None = None) -> Converter[datetime]:
+    """Timestamps written with a ``strftime`` pattern, e.g. ``"%Y%m%d%H%M%S"``.
+
+    Two-digit years follow the same rule as :func:`date_format`, and values
+    the pattern cannot represent raise ``ValueError`` when written.
+    """
 
     def parse(text: str) -> datetime:
         return datetime.strptime(text, fmt)
 
-    def format(value: datetime) -> str:
-        return value.strftime(fmt)
-
-    return Converter(parse, format, name or f"datetime_format({fmt!r})")
+    return Converter(parse, _checked(fmt, parse), name or f"datetime_format({fmt!r})")
 
 
-#: Two-digit year, e.g. ``240101`` is 2024-01-01 (``strptime`` maps 00-68 to
-#: 2000-2068 and 69-99 to 1969-1999).
+#: Two-digit year with Python's pivot: ``240101`` is 2024-01-01 and ``690101``
+#: is 1969-01-01. Years outside 1969 to 2068 cannot be written.
 YYMMDD = date_format("%y%m%d", "YYMMDD")
 #: Four-digit year, e.g. ``20240101``.
 YYYYMMDD = date_format("%Y%m%d", "YYYYMMDD")
@@ -100,23 +123,40 @@ YYYYMMDDHHMMSS = datetime_format("%Y%m%d%H%M%S", "YYYYMMDDHHMMSS")
 # -- numbers -----------------------------------------------------------------
 
 
-def zero_padded(width: int) -> Converter:
-    """Integers written with leading zeros to exactly ``width`` digits, e.g. ``003``."""
+def zero_padded(width: int) -> Converter[int]:
+    """Non-negative integers padded with zeros to ``width`` digits, e.g. ``003``.
+
+    Reading requires digits only and at most ``width`` of them, so a value
+    written without its padding still reads. Writing requires an integer
+    that fits in ``width`` digits.
+    """
+
+    def parse(text: str) -> int:
+        if not (text.isascii() and text.isdigit()) or len(text) > width:
+            raise ValueError(f"expected up to {width} digits, got {text!r}")
+        return int(text)
 
     def format(value: int) -> str:
-        text = f"{int(value):0{width}d}"
+        number = operator.index(value)
+        if number < 0:
+            raise ValueError(f"{number} is negative")
+        text = f"{number:0{width}d}"
         if len(text) > width:
-            raise ValueError(f"{value} does not fit in {width} digits")
+            raise ValueError(f"{number} does not fit in {width} digits")
         return text
 
-    return Converter(int, format, f"zero_padded({width})")
+    return Converter(parse, format, f"zero_padded({width})")
 
 
 # -- flags and choices -------------------------------------------------------
 
 
-def flag(true: str = "YES", false: str = "NO") -> Converter:
-    """Booleans written as one of two words, e.g. ``flag("ON", "OFF")``."""
+def flag(true: str = "YES", false: str = "NO") -> Converter[bool]:
+    """Booleans written as one of two words, e.g. ``flag("ON", "OFF")``.
+
+    Reading accepts exactly the two words. Writing accepts a ``bool`` or one
+    of the two words themselves; anything else raises.
+    """
 
     def parse(text: str) -> bool:
         if text == true:
@@ -125,8 +165,13 @@ def flag(true: str = "YES", false: str = "NO") -> Converter:
             return False
         raise ValueError(f"expected {true} or {false}, got {text!r}")
 
-    def format(value: bool) -> str:
-        return true if value else false
+    def format(value: Any) -> str:
+        if isinstance(value, bool):
+            return true if value else false
+        if isinstance(value, str):
+            parse(value)
+            return value
+        raise TypeError(f"expected a bool or {true!r}/{false!r}, got {value!r}")
 
     return Converter(parse, format, f"flag({true!r}, {false!r})")
 
@@ -137,11 +182,11 @@ ON_OFF = flag("ON", "OFF")
 TRUE_FALSE = flag("TRUE", "FALSE")
 
 
-def one_of(*allowed: str) -> Converter:
+def one_of(*allowed: str) -> Converter[str]:
     """Strings restricted to a fixed set of spellings, kept as strings."""
     choices = tuple(allowed)
 
-    def check(text: Any) -> str:
+    def check(text: str) -> str:
         if text not in choices:
             raise ValueError(f"expected one of {', '.join(choices)}, got {text!r}")
         return text
@@ -149,7 +194,7 @@ def one_of(*allowed: str) -> Converter:
     return Converter(check, check, f"one_of{choices!r}")
 
 
-def enum_by_value(enum_type: type[Enum]) -> Converter:
+def enum_by_value(enum_type: type[E]) -> Converter[E]:
     """Enum members written as their ``value``, which must be a string."""
 
     def format(member: Enum) -> str:
@@ -158,17 +203,20 @@ def enum_by_value(enum_type: type[Enum]) -> Converter:
     return Converter(enum_type, format, f"enum_by_value({enum_type.__name__})")
 
 
-def enum_by_name(enum_type: type[Enum]) -> Converter:
+def enum_by_name(enum_type: type[E]) -> Converter[E]:
     """Enum members written as their ``name``."""
 
-    def parse(text: str) -> Enum:
+    def parse(text: str) -> E:
         try:
             return enum_type[text]
         except KeyError:
             names = ", ".join(member.name for member in enum_type)
             raise ValueError(f"expected one of {names}, got {text!r}") from None
 
-    def format(member: Enum) -> str:
+    def format(member: Any) -> str:
+        if isinstance(member, str):
+            parse(member)
+            return member
         return enum_type(member).name
 
     return Converter(parse, format, f"enum_by_name({enum_type.__name__})")

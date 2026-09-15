@@ -1,19 +1,44 @@
 [project]
 name = "kvsections"
 version = "0.1.0"
-description = "Parse files with a specific key-value format."
+description = "Read and write fixed-width text files made of named sections of KEY=VALUE pairs."
 readme = "README.md"
 authors = [
     { name = "Jonathan Olsten", email = "jonathan.olsten@gmail.com" }
 ]
 requires-python = ">=3.9"
 dependencies = []
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["parser", "fixed-width", "key-value", "sections"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Text Processing",
+    "Typing :: Typed",
+]
 
 [dependency-groups]
-dev = ["pytest>=7", "ruff"]
+dev = ["mypy", "pytest>=7", "pytest-cov", "ruff"]
+
+[tool.mypy]
+files = ["src"]
+python_version = "3.9"
+strict = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["kvsections"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 95
 
 [tool.ruff]
 target-version = "py39"
@@ -21,6 +46,9 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.format]
+line-ending = "lf"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
