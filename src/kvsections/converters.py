@@ -7,9 +7,9 @@ Pass one as the type of a :class:`~kvsections.Field`::
 
     class HeaderSection(Section):
         section_name = "HEADER"
-        created = Field("CREATED", YYYYMMDD)      # datetime.date
-        start = Field("START", HHMMSS)            # datetime.time
-        revision = Field("REVISION", zero_padded(3))
+        created = Field(YYYYMMDD)          # datetime.date
+        start = Field(HHMMSS)              # datetime.time
+        revision = Field(zero_padded(3))
 
 Every converter validates on both sides: a value the text does not fit
 raises ``ValueError`` when read, and a value that cannot be written raises

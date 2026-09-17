@@ -34,7 +34,7 @@ class _Reporter:
     def warn(self, lineno: int, message: str) -> None:
         if self.strict:
             raise ParseError(lineno, message)
-        self.doc.warnings.append(ParseWarning(lineno, message))
+        self.doc.document_warnings.append(ParseWarning(lineno, message))
 
     def check_chars(
         self, lineno: int, text: str, allowed: frozenset[str], what: str
@@ -61,12 +61,13 @@ def parse_pairs(section: Section, content: str, lineno: int, report: _Reporter) 
             key = key.upper()
         report.check_chars(lineno, key, TOKEN_CHARS, "key")
         report.check_chars(lineno, value, TOKEN_CHARS, f"value of {key}")
-        if key in section.fields:
+        if key in section.section_fields:
             report.warn(
                 lineno,
-                f"duplicate key {key} in section {section.name}; last value wins",
+                f"duplicate key {key} in section {section.section_name}; "
+                "last value wins",
             )
-        section.fields[key] = value
+        section.section_fields[key] = value
 
 
 class _TextBuffer:
@@ -98,10 +99,10 @@ class _TextBuffer:
         while lines and not lines[0]:
             lines.pop(0)
         text = "\n".join(lines)
-        if self.section.text and text:
-            self.section.text += "\n" + text
+        if self.section.section_text and text:
+            self.section.section_text += "\n" + text
         elif text:
-            self.section.text = text
+            self.section.section_text = text
 
 
 def parse(document_type: type[_D], text: str, *, strict: bool = False) -> _D:
@@ -149,8 +150,8 @@ def parse(document_type: type[_D], text: str, *, strict: bool = False) -> _D:
             report.warn(lineno, f"section name {name!r} is not upper-case; normalized")
             name = name.upper()
         report.check_chars(lineno, name, TOKEN_CHARS, "section name")
-        canonical = document_type.canonical_name(name)
-        existing = doc.sections.get(canonical)
+        canonical = document_type.document_canonical_name(name)
+        existing = doc.document_sections.get(canonical)
         if existing is not None:
             what = name if name == canonical else f"{name} (alias of {canonical})"
             report.warn(
@@ -158,7 +159,7 @@ def parse(document_type: type[_D], text: str, *, strict: bool = False) -> _D:
             )
             current = existing
         else:
-            current = doc.add(document_type.new_section(name))
+            current = doc.document_add(document_type.document_new_section(name))
 
         if isinstance(current, TextSection):
             buffer = _TextBuffer(current, record.content_col if rest else None)

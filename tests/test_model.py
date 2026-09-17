@@ -5,14 +5,15 @@ import pytest
 import kvsections
 from helpers import (
     HeaderSection,
-    SampleDocument,
     ScheduleSection,
+    names,
 )
 from kvsections import (
     Converter,
     Document,
     Field,
     Section,
+    SectionField,
     TextSection,
 )
 from kvsections.converters import (
@@ -24,13 +25,19 @@ from kvsections.fields import MISSING
 
 def test_section_normalizes_keys_and_values():
     section = Section("header", {"owner": "NOBODY"}, version=42, items=("a", 1))
-    assert section.name == "HEADER"
-    assert section.fields == {"OWNER": "NOBODY", "VERSION": "42", "ITEMS": "a,1"}
+    assert section.section_name == "HEADER"
+    assert section.section_fields == {
+        "OWNER": "NOBODY",
+        "VERSION": "42",
+        "ITEMS": "a,1",
+    }
     assert section["owner"] == "NOBODY"
     assert "Owner" in section
     del section["OWNER"]
     assert "owner" not in section
-    assert list(section) == ["VERSION", "ITEMS"]
+    assert list(section) == [("VERSION", "42"), ("ITEMS", "a,1")]
+    assert dict(section) == {"VERSION": "42", "ITEMS": "a,1"}
+    assert len(section) == 2
 
 
 def test_section_requires_name_unless_class_provides_one():
@@ -40,32 +47,52 @@ def test_section_requires_name_unless_class_provides_one():
     class Header(Section):
         section_name = "HEADER"
 
-    assert Header().name == "HEADER"
-    assert Header("OTHER").name == "OTHER"
+    assert Header().section_name == "HEADER"
+    assert Header("OTHER").section_name == "OTHER"
+    assert Header.section_name == "HEADER"  # the class default is untouched
+
+
+def test_constructor_names_are_positional_only_so_keywords_are_keys():
+    section = HeaderSection(name="Bob", fields="x", version=3)
+    assert section.section_name == "HEADER"
+    assert dict(section) == {"NAME": "Bob", "FIELDS": "x", "VERSION": "3"}
+    assert dict(Section("A", fields="x")) == {"FIELDS": "x"}
+    with pytest.raises(TypeError):
+        TextSection("A", text="x")
+    with pytest.raises(TypeError):
+        Document(sections=[])
+
+
+def test_section_accepts_a_mapping_or_pairs_including_another_section():
+    original = Section("A", X="1", Y="2")
+    assert Section("B", original) == Section("B", {"X": "1", "Y": "2"})
+    assert Section("C", [("x", 1), ("y", [2, 3])]) == Section("C", X="1", Y="2,3")
+    assert Section("D", dict(original)) == Section("D", X="1", Y="2")
 
 
 def test_lists_assigned_to_raw_keys_are_joined_with_commas():
     section = Section("A", {"L": ["x", "y"], "ONE": ["z"], "NONE": [], "N": [1, 2]})
-    assert section.fields == {"L": "x,y", "ONE": "z", "NONE": "", "N": "1,2"}
-    assert Document([section]).dumps(width=None) == "A L=x,y ONE=z NONE= N=1,2\n"
+    assert section.section_fields == {"L": "x,y", "ONE": "z", "NONE": "", "N": "1,2"}
+    assert Document([section]).document_dumps(width=None) == (
+        "A L=x,y ONE=z NONE= N=1,2\n"
+    )
     with pytest.raises(ValueError, match="comma"):
         section["BAD"] = ["a,b"]
 
 
 def test_assigning_none_to_a_raw_key_removes_it():
     section = Section("A", X="1", Y=None)
-    assert section.fields == {"X": "1"}
+    assert section.section_fields == {"X": "1"}
     section["X"] = None
     section["MISSING"] = None
-    assert section.fields == {}
-    assert Document([section]).dumps(width=None) == "A\n"
+    assert section.section_fields == {}
+    assert Document([section]).document_dumps(width=None) == "A\n"
 
 
 def test_non_string_keys_are_absent_rather_than_errors():
     doc = kvsections.loads("A X=1")
     section = doc["A"]
     assert 1 not in doc and 1 not in section
-    assert doc.get(1) is None and section.get(1) is None
     with pytest.raises(KeyError):
         _ = doc[1]
     with pytest.raises(KeyError):
@@ -76,38 +103,21 @@ def test_non_string_keys_are_absent_rather_than_errors():
         section[1] = "x"
 
 
-def test_setdefault_returns_the_stored_object():
-    doc = SampleDocument()
-    stored = doc.setdefault("HEADER", Section("HEADER", VERSION="1"))
-    assert isinstance(stored, HeaderSection) and stored is doc["HEADER"]
-    assert doc.setdefault("HEADER", Section("HEADER", VERSION="2")) is stored
-    assert stored.version == 1
-    section = Section("A")
-    assert section.setdefault("K", [1, 2]) == "1,2"
-    assert section.setdefault("K", "other") == "1,2"
-    assert section.setdefault("MISSING") is None
-    assert "MISSING" not in section
-
-
-def test_mapping_helpers_on_documents_and_sections():
+def test_sections_and_documents_are_pair_containers_not_mappings():
     doc = kvsections.loads("A X=1 Y=2\nB Z=3\n")
     section = doc["A"]
-    assert section.pop("X") == "1"
-    assert section.pop("X", "gone") == "gone"
-    section.update({"w": "4"}, v=5)
-    assert section.fields == {"Y": "2", "W": "4", "V": "5"}
-    assert section.popitem() == ("Y", "2")
-    section.clear()
-    assert len(section) == 0
-
-    assert doc.pop("B") == Section("B", Z="3")
-    assert doc.pop("B", None) is None
-    doc.update({"C": Section("C")})
-    doc.update([("D", Section("D"))])
-    assert list(doc) == ["A", "C", "D"]
-    assert doc.popitem()[0] == "A"
-    doc.clear()
-    assert len(doc) == 0
+    for name in ("items", "keys", "values", "get", "update", "pop", "clear"):
+        assert not hasattr(section, name)
+        assert not hasattr(doc, name)
+    assert list(section) == [("X", "1"), ("Y", "2")]
+    assert dict(section) == {"X": "1", "Y": "2"}
+    assert list(doc) == [("A", section), ("B", doc["B"])]
+    assert dict(doc) == {"A": section, "B": doc["B"]}
+    assert names(doc) == ["A", "B"]
+    assert len(doc) == 2 and "b" in doc
+    del doc["A"]
+    assert names(doc) == ["B"]
+    assert Document(doc) == doc and Document(dict(doc)) == doc
 
 
 def test_repr():
@@ -131,8 +141,8 @@ def test_field_default_missing_and_deletion():
 
 
 def test_scalar_field_keeps_commas():
-    assert HeaderSection(fields={"AUTHOR": "A,B"}).author == "A,B"
-    assert HeaderSection(fields={"AUTHOR": ["A", "B"]}).author == "A,B"
+    assert HeaderSection(AUTHOR="A,B").author == "A,B"
+    assert HeaderSection(AUTHOR=["A", "B"]).author == "A,B"
 
 
 def test_list_field_splits_and_joins():
@@ -156,26 +166,26 @@ def test_list_field_splits_and_joins():
 def test_list_field_type_forms_and_item_converters():
     class Items(Section):
         section_name = "ITEMS"
-        bare = Field("BARE", list)
-        tags = Field("TAGS", list[str], parse=str.lower, format=str.upper)
-        padded = Field("PADDED", list[int], format="{:03d}".format, default=())
+        bare = Field(list)
+        tags = Field(list[str], parse=str.lower, format=str.upper)
+        padded = Field(list[int], format="{:03d}".format, default=())
 
-    items = Items(fields={"BARE": "a,b", "TAGS": "X,Y"})
+    items = Items(BARE="a,b", TAGS="X,Y")
     assert items.bare == ["a", "b"]
     assert items.tags == ["x", "y"]
     assert items.padded == []
     items.tags = ["p", "q"]
     items.padded = [7, 42]
-    assert items.fields["TAGS"] == "P,Q"
-    assert items.fields["PADDED"] == "007,042"
+    assert items.section_fields["TAGS"] == "P,Q"
+    assert items.section_fields["PADDED"] == "007,042"
     assert items.padded == [7, 42]
 
 
 def test_list_field_default_none_is_returned_as_is():
     class S(Section):
         section_name = "S"
-        xs = Field("XS", list[int], default=None)
-        ys = Field("YS", list[int], default=(1,))
+        xs = Field(list[int], default=None)
+        ys = Field(list[int], default=(1,))
 
     assert S().xs is None
     assert S().ys == [1]
@@ -183,7 +193,11 @@ def test_list_field_default_none_is_returned_as_is():
 
 def test_typed_constructor_kwargs_go_through_fields():
     header = HeaderSection(version=5, revision=12, OWNER="SOMEBODY")
-    assert header.fields == {"VERSION": "5", "REVISION": "012", "OWNER": "SOMEBODY"}
+    assert header.section_fields == {
+        "VERSION": "5",
+        "REVISION": "012",
+        "OWNER": "SOMEBODY",
+    }
 
 
 def test_custom_converter_and_repr():
@@ -195,14 +209,14 @@ def test_custom_converter_and_repr():
 
     class S(Section):
         section_name = "S"
-        word = Field("WORD", upper)
-        words = Field("WORDS", list[upper])
+        word = Field(upper)
+        words = Field(list[upper])
 
-    s = S(fields={"WORD": "abc", "WORDS": "a,b"})
+    s = S(WORD="abc", WORDS="a,b")
     assert s.word == "ABC" and s.words == ["A", "B"]
     s.word = "XYZ"
     s.words = ["P", "Q"]
-    assert s.fields == {"WORD": "xyz", "WORDS": "p,q"}
+    assert s.section_fields == {"WORD": "xyz", "WORDS": "p,q"}
 
 
 def test_model_type_errors_and_unrelated_comparisons():
@@ -221,7 +235,8 @@ def test_model_type_errors_and_unrelated_comparisons():
 
 
 def test_field_and_missing_reprs():
-    assert repr(Field("key", int)) == "Field('KEY')"
+    assert repr(Field(int, key="key")) == "Field('KEY')"
+    assert repr(HeaderSection.version) == "Field('VERSION')"
     assert repr(MISSING) == "<missing>"
     assert isinstance(HeaderSection.version, Field)  # class access gives the descriptor
 
@@ -239,11 +254,124 @@ def test_deleting_a_missing_typed_field_is_an_attribute_error():
 
 def test_bool_shorthand_is_rejected_with_a_hint():
     with pytest.raises(TypeError, match="YES_NO"):
-        Field("ENABLED", bool)
+        Field(bool)
     with pytest.raises(TypeError, match="YES_NO"):
-        Field("FLAGS", list[bool])
+        Field(list[bool])
 
 
-def test_field_key_must_be_a_str():
+def test_field_key_is_keyword_only_and_a_non_empty_str():
+    with pytest.raises(TypeError, match="keyword-only"):
+        Field("VERSION")
+    with pytest.raises(TypeError):
+        Field("VERSION", int)
     with pytest.raises(TypeError, match="key must be a str"):
-        Field(5)
+        Field(key=5)
+    with pytest.raises(ValueError, match="empty"):
+        Field(key="")
+
+
+# --------------------------------------------------------------------------
+# the attribute names the key
+# --------------------------------------------------------------------------
+
+
+def test_field_key_comes_from_the_attribute():
+    class S(Section):
+        section_name = "S"
+        version = Field(int)
+        name = Field()  # nothing on a section is called name any more
+        class_ = Field()  # trailing underscore for a keyword
+        max_size = Field(int, key="MAX-SIZE")  # explicit key for a non-identifier
+        mixed = Field(key="lower")  # explicit keys are upper-cased like any key
+
+    fields = (S.version, S.name, S.class_, S.max_size, S.mixed)
+    assert [f.key for f in fields] == ["VERSION", "NAME", "CLASS", "MAX-SIZE", "LOWER"]
+    s = S(version=1, name="Bob", class_="X", max_size=9)
+    assert dict(s) == {"VERSION": "1", "NAME": "Bob", "CLASS": "X", "MAX-SIZE": "9"}
+    assert s.name == "Bob" and s.class_ == "X" and s.max_size == 9
+    assert kvsections.dumps(Document([s]), width=None) == (
+        "S VERSION=1 NAME=Bob CLASS=X MAX-SIZE=9\n"
+    )
+
+
+def test_mapping_method_names_are_free_for_keys():
+    class S(Section):
+        section_name = "S"
+        items = Field(list[str])
+        values = Field()
+        update = Field()
+        keys = Field()
+
+    s = S(items=["a", "b"], values="v", update="u", keys="k")
+    assert s.items == ["a", "b"]
+    assert dict(iter(s)) == {"ITEMS": "a,b", "VALUES": "v", "UPDATE": "u", "KEYS": "k"}
+    with pytest.raises(TypeError):
+        dict(s)  # dict() takes anything with a keys attribute for a mapping
+
+
+def test_field_declarations_are_checked_when_the_class_is_created():
+    with pytest.raises(TypeError, match="starting with 'section_' are reserved"):
+
+        class Reserved(Section):
+            section_name = "S"
+            section_id = Field()
+
+    with pytest.raises(TypeError, match=r"Dunder\.__init__ would shadow Section"):
+
+        class Dunder(Section):
+            section_name = "S"
+            __init__ = Field()
+
+    class Plain:
+        def total(self):
+            return 0
+
+    with pytest.raises(TypeError, match=r"Mixed\.total would shadow Plain\.total"):
+
+        class Mixed(Plain, Section):
+            section_name = "S"
+            total = Field(int)
+
+    with pytest.raises(TypeError, match="cannot name a key"):
+
+        class Underscore(Section):
+            section_name = "S"
+            _ = Field()
+
+    with pytest.raises(TypeError, match="holds free text"):
+
+        class Text(TextSection):
+            section_name = "T"
+            x = Field()
+
+    with pytest.raises(TypeError, match="belongs on a Document"):
+
+        class Wrong(Section):
+            section_name = "S"
+            x = SectionField(Section)
+
+    with pytest.raises(TypeError, match="belongs on a Document"):
+
+        class WrongText(TextSection):
+            section_name = "T"
+            x = SectionField(Section)
+
+
+def test_inherited_fields_may_be_redeclared_and_mixed_in():
+    class Base(Section):
+        section_name = "B"
+        version = Field(int)
+
+    class Derived(Base):
+        version = Field(str)
+
+    assert Derived(version=7).version == "7"
+
+    class Stamped:
+        created = Field()
+
+    class WithMixin(Section, Stamped):
+        section_name = "M"
+
+    assert WithMixin(created="x").created == "x"
+    assert WithMixin.created.key == "CREATED"

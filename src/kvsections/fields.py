@@ -68,15 +68,71 @@ def _converters_for(type_: Any) -> tuple[Any, Any]:
     return type_, None
 
 
-class Field(Generic[T]):
+def name_from_attr(attr: str) -> str:
+    """The key or section name an attribute stands for.
+
+    The attribute is upper-cased, and one trailing underscore is dropped so
+    that ``class_`` stands for ``CLASS``, the PEP 8 spelling for a name that
+    is a Python keyword.
+    """
+    if attr.endswith("_") and not attr.endswith("__"):
+        attr = attr[:-1]
+    return attr.upper()
+
+
+def check_declaration(
+    owner: type, attr: str, prefix: str, allowed: type, keyword: str
+) -> None:
+    """Refuse a descriptor whose attribute name the library needs for itself.
+
+    ``prefix`` is the namespace reserved on ``owner`` (``section_`` on a
+    section, ``document_`` on a document). Any other attribute may be
+    declared unless a base class already defines it as something other
+    than an ``allowed`` descriptor, which may be redeclared. ``keyword`` is
+    the argument that binds a name explicitly when the attribute cannot
+    spell it.
+    """
+    where = f"{owner.__name__}.{attr}"
+    hint = f"declare it under another attribute and pass {keyword}=... explicitly"
+    if attr.startswith(prefix):
+        raise TypeError(
+            f"{where}: attribute names starting with {prefix!r} are reserved; {hint}"
+        )
+    for base in owner.__mro__[1:]:
+        if attr in vars(base):
+            if not isinstance(vars(base)[attr], allowed):
+                raise TypeError(f"{where} would shadow {base.__name__}.{attr}; {hint}")
+            break
+
+
+class Declaration:
+    """What :class:`Field` and ``SectionField`` share: a schema descriptor.
+
+    ``__set_name__`` records the attribute the descriptor was declared under.
+    The owning class validates the declaration in ``__init_subclass__``, so a
+    bad one is a plain ``TypeError``; Python 3.11 and earlier wrap anything
+    raised from ``__set_name__`` in a ``RuntimeError``.
+    """
+
+    attr: str = ""
+
+    def __set_name__(self, owner: type, attr: str) -> None:
+        self.attr = attr
+
+
+class Field(Declaration, Generic[T]):
     """Descriptor exposing one key of a :class:`Section` as a typed attribute.
+
+    The key is the attribute's name in upper case, with one trailing
+    underscore dropped (``class_`` stands for ``CLASS``). Pass ``key`` only
+    when the attribute cannot spell it, such as ``Field(int, key="MAX-SIZE")``.
 
     ``parse`` converts the stored string to the attribute's type on read and
     ``format`` converts it back to a string on write. Passing ``type`` is
     shorthand for ``parse=type, format=str``; a :class:`Converter` supplies
     both. Values with leading zeros need an explicit ``format`` to survive a
-    round trip, for example ``Field("APPLES", int, format="{:05d}".format)``
-    or ``Field("APPLES", zero_padded(5))``.
+    round trip, for example ``Field(int, format="{:05d}".format)`` or
+    ``Field(zero_padded(5))``.
 
     A ``type`` of ``list[T]`` (or bare ``list``) makes the attribute a list:
     the stored value is split on commas, each item converted with ``T``, and
@@ -86,6 +142,11 @@ class Field(Generic[T]):
 
     Reading a missing key raises :class:`AttributeError` unless ``default`` is
     given. Assigning ``None`` removes the key.
+
+    A field may only be declared on a :class:`Section` subclass, under an
+    attribute that does not start with ``section_`` and that no base class
+    already uses for something else; anything else is a ``TypeError`` when
+    the class is created.
     """
 
     key: str
@@ -94,9 +155,9 @@ class Field(Generic[T]):
     @overload
     def __init__(
         self: Field[str],
-        key: str,
         type: None = None,
         *,
+        key: str | None = None,
         parse: None = None,
         format: Callable[[Any], str] | None = None,
         default: Any = ...,
@@ -105,9 +166,9 @@ class Field(Generic[T]):
     @overload
     def __init__(
         self: Field[list[T]],
-        key: str,
         type: type[list[T]],
         *,
+        key: str | None = None,
         parse: Callable[[str], T] | None = None,
         format: Callable[[T], str] | None = None,
         default: Any = ...,
@@ -116,9 +177,9 @@ class Field(Generic[T]):
     @overload
     def __init__(
         self: Field[T],
-        key: str,
         type: Converter[T] | Callable[[str], T],
         *,
+        key: str | None = None,
         parse: Callable[[str], T] | None = None,
         format: Callable[[T], str] | None = None,
         default: Any = ...,
@@ -127,9 +188,9 @@ class Field(Generic[T]):
     @overload
     def __init__(
         self: Field[T],
-        key: str,
         type: None = None,
         *,
+        key: str | None = None,
         parse: Callable[[str], T],
         format: Callable[[T], str] | None = None,
         default: Any = ...,
@@ -137,17 +198,27 @@ class Field(Generic[T]):
 
     def __init__(
         self,
-        key: str,
         type: Any = None,
         *,
+        key: str | None = None,
         parse: Any = None,
         format: Any = None,
         default: Any = MISSING,
     ) -> None:
-        if not isinstance(key, str):
-            raise TypeError(f"key must be a str, not {builtins_type(key).__name__}")
-        self.key = key.upper()
-        self.attr = key
+        if isinstance(type, str):
+            raise TypeError(
+                "the key is keyword-only: name the attribute after the key, "
+                f"or pass key={type!r}"
+            )
+        if key is not None:
+            if not isinstance(key, str):
+                raise TypeError(f"key must be a str, not {builtins_type(key).__name__}")
+            if not key:
+                raise ValueError("key must not be empty")
+            key = key.upper()
+        # An empty key means "take it from the attribute" in __set_name__.
+        self.key = key or ""
+        self.attr = self.key
         self.is_list = type is list or get_origin(type) is list
         if self.is_list:
             args = get_args(type)
@@ -161,7 +232,18 @@ class Field(Generic[T]):
         self.default = default
 
     def __set_name__(self, owner: type, attr: str) -> None:
-        self.attr = attr
+        super().__set_name__(owner, attr)
+        if not self.key:
+            self.key = name_from_attr(attr)
+
+    def _check(self, owner: type) -> None:
+        """Validate the declaration; ``Section.__init_subclass__`` calls this."""
+        check_declaration(owner, self.attr, "section_", Field, "key")
+        if not self.key:
+            raise TypeError(
+                f"{owner.__name__}.{self.attr} cannot name a key; "
+                "pass key=... explicitly"
+            )
 
     def _describe(self, section: Section) -> str:
         return f"{builtins_type(section).__name__}.{self.attr} ({self.key})"
@@ -175,7 +257,7 @@ class Field(Generic[T]):
     def __get__(self, section: Section | None, owner: type | None = None) -> Any:
         if section is None:
             return self
-        raw = section.fields.get(self.key)
+        raw = section.section_fields.get(self.key)
         if raw is None:
             if self.default is MISSING:
                 raise AttributeError(f"{self._describe(section)} is not set")
@@ -191,7 +273,7 @@ class Field(Generic[T]):
 
     def __set__(self, section: Section, value: T | None) -> None:
         if value is None:
-            section.fields.pop(self.key, None)
+            section.section_fields.pop(self.key, None)
             return
         if self.is_list:
             if isinstance(value, str):
@@ -204,7 +286,7 @@ class Field(Generic[T]):
             section[self.key] = self.format(value) if self.format is not None else value
 
     def __delete__(self, section: Section) -> None:
-        if self.key not in section.fields:
+        if self.key not in section.section_fields:
             raise AttributeError(f"{self._describe(section)} is not set")
         del section[self.key]
 

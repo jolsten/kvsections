@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, MutableMapping
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, TypeVar
 
-from .fields import Field
+from .fields import Declaration, Field
 
 __all__ = ["BaseSection", "Section", "TextSection", "convert_section"]
 
@@ -41,43 +41,70 @@ def _normalize_value(value: Any) -> str:
 class BaseSection:
     """What the two section kinds share: a normalized upper-case name.
 
+    Everything the library puts on a section is named ``section_...``, so
+    that on a :class:`Section` subclass every other attribute can be a key.
     ``isinstance(x, BaseSection)`` is the test for "any kind of section".
     """
 
-    #: Default name used when a subclass is instantiated without one.
-    section_name: str | None = None
+    #: The section's name, upper-case. A subclass may set it as a class
+    #: attribute to supply the default when instantiated without a name.
+    section_name: str
 
-    def __init__(self, name: str | None = None):
+    def __init__(self, name: str | None = None, /):
         if name is None:
-            name = self.section_name
+            name = getattr(type(self), "section_name", None)
         if name is None:
             raise TypeError(
                 f"{type(self).__name__} needs a name (or set section_name on the class)"
             )
-        self.name = _normalize_key(name)
+        self.section_name = _normalize_key(name)
 
 
-class Section(BaseSection, MutableMapping[str, str]):
-    """A named section holding an ordered mapping of ``KEY`` to value.
+class Section(BaseSection):
+    """A named section holding an ordered set of ``KEY=VALUE`` pairs.
 
-    Keys are stored upper-case, and lookups are case-insensitive. Values are
-    always strings, exactly as they appear in the file; a comma-separated
-    list is one string here, and :class:`Field` splits it when declared with
-    a ``list[T]`` type. Assigning ``None`` to a key removes it. Subclasses
-    may declare :class:`Field` descriptors to expose keys as typed attributes
-    and set ``section_name`` so the name can be omitted from the constructor.
+    ``section[key]`` reads, assigns and deletes values, ``key in section``
+    tests for one, and iterating yields ``(key, value)`` pairs, so
+    ``dict(section)`` and ``for key, value in section`` both work. Keys are
+    stored upper-case and looked up case-insensitively. Values are always
+    strings, exactly as they appear in the file; a comma-separated list is
+    one string here, and :class:`Field` splits it when declared with a
+    ``list[T]`` type. Assigning ``None`` to a key removes it.
+
+    ``name`` and ``fields`` are positional-only, so every keyword argument
+    is a key: ``Section("HEADER", VERSION="1")``. On a subclass a keyword
+    that names a :class:`Field` goes through it, so ``HeaderSection(version=1)``
+    stores the formatted value. Subclasses set ``section_name`` so the name
+    can be omitted. A section is deliberately not a ``Mapping``: apart from
+    ``section_name`` and ``section_fields``, every attribute of a subclass
+    is a key.
     """
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        for value in vars(cls).values():
+            if isinstance(value, Field):
+                value._check(cls)
+            elif isinstance(value, Declaration):
+                raise TypeError(
+                    f"{cls.__name__}.{value.attr}: a SectionField belongs on a "
+                    "Document subclass"
+                )
 
     def __init__(
         self,
         name: str | None = None,
-        fields: Mapping[str, Any] | None = None,
+        fields: Mapping[str, Any] | Iterable[tuple[str, Any]] | None = None,
+        /,
         **kwargs: Any,
     ):
         super().__init__(name)
-        self.fields: dict[str, str] = {}
+        #: The raw pairs, keys upper-case, in file order. Writing to it
+        #: directly bypasses normalization.
+        self.section_fields: dict[str, str] = {}
         if fields is not None:
-            for key, value in fields.items():
+            pairs = fields.items() if isinstance(fields, Mapping) else fields
+            for key, value in pairs:
                 self[key] = value
         for attr, value in kwargs.items():
             descriptor = getattr(type(self), attr, None)
@@ -86,87 +113,95 @@ class Section(BaseSection, MutableMapping[str, str]):
             else:
                 self[attr] = value
 
-    # -- MutableMapping ----------------------------------------------------
+    # -- container protocol ------------------------------------------------
 
     def __getitem__(self, key: str) -> str:
         if not isinstance(key, str):
             raise KeyError(key)
-        return self.fields[_normalize_key(key)]
+        return self.section_fields[_normalize_key(key)]
 
     def __setitem__(self, key: str, value: Any) -> None:
         """Store ``value`` under ``key``; ``None`` removes the key instead."""
         key = _normalize_key(key)
         if value is None:
-            self.fields.pop(key, None)
+            self.section_fields.pop(key, None)
         else:
-            self.fields[key] = _normalize_value(value)
+            self.section_fields[key] = _normalize_value(value)
 
     def __delitem__(self, key: str) -> None:
         if not isinstance(key, str):
             raise KeyError(key)
-        del self.fields[_normalize_key(key)]
+        del self.section_fields[_normalize_key(key)]
 
-    def __iter__(self) -> Iterator[str]:
-        return iter(self.fields)
+    def __iter__(self) -> Iterator[tuple[str, str]]:
+        return iter(self.section_fields.items())
 
     def __len__(self) -> int:
-        return len(self.fields)
+        return len(self.section_fields)
 
     def __contains__(self, key: object) -> bool:
-        return isinstance(key, str) and _normalize_key(key) in self.fields
-
-    def setdefault(self, key: str, default: Any = None) -> Any:
-        """Return the value of ``key``, storing ``default`` first if absent.
-
-        The stored string is returned, so a list default comes back joined.
-        A ``None`` default stores nothing and returns ``None``.
-        """
-        if key in self:
-            return self[key]
-        if default is None:
-            return None
-        self[key] = default
-        return self[key]
+        return isinstance(key, str) and _normalize_key(key) in self.section_fields
 
     # -- misc --------------------------------------------------------------
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Section):
             return NotImplemented
-        return self.name == other.name and self.fields == other.fields
+        return (
+            self.section_name == other.section_name
+            and self.section_fields == other.section_fields
+        )
 
     __hash__ = None  # type: ignore[assignment]
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}({self.name!r}, {self.fields!r})"
+        return f"{type(self).__name__}({self.section_name!r}, {self.section_fields!r})"
 
 
 class TextSection(BaseSection):
     """A named section whose content is free text rather than key/value pairs.
 
-    ``text`` holds the lines joined with ``"\\n"``. The reader produces these
-    for the sections a schema registers as text.
+    ``section_text`` holds the lines joined with ``"\\n"``. The reader
+    produces these for the sections a schema registers as text. ``name``
+    and ``text`` are positional-only.
 
     Text starts at its first non-blank character: leading whitespace on the
     first line, blank lines at either end and trailing spaces cannot be told
     apart from layout, so a round trip through a file drops them.
     """
 
-    def __init__(self, name: str | None = None, text: str = ""):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        for value in vars(cls).values():
+            if isinstance(value, Field):
+                raise TypeError(
+                    f"{cls.__name__}.{value.attr}: a Field needs a Section subclass, "
+                    f"and {cls.__name__} holds free text rather than keys"
+                )
+            if isinstance(value, Declaration):
+                raise TypeError(
+                    f"{cls.__name__}.{value.attr}: a SectionField belongs on a "
+                    "Document subclass"
+                )
+
+    def __init__(self, name: str | None = None, text: str = "", /):
         super().__init__(name)
         if not isinstance(text, str):
             raise TypeError(f"text must be a str, not {type(text).__name__}")
-        self.text = text
+        self.section_text = text
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, TextSection):
             return NotImplemented
-        return self.name == other.name and self.text == other.text
+        return (
+            self.section_name == other.section_name
+            and self.section_text == other.section_text
+        )
 
     __hash__ = None  # type: ignore[assignment]
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}({self.name!r}, {self.text!r})"
+        return f"{type(self).__name__}({self.section_name!r}, {self.section_text!r})"
 
 
 def convert_section(section: BaseSection, target: type[_S]) -> _S:
@@ -176,15 +211,15 @@ def convert_section(section: BaseSection, target: type[_S]) -> _S:
     if issubclass(target, TextSection):
         if not isinstance(section, TextSection):
             raise TypeError(
-                f"section {section.name} holds key/value pairs but "
+                f"section {section.section_name} holds key/value pairs but "
                 f"{target.__name__} is a text section"
             )
-        return target(section.name, section.text)
+        return target(section.section_name, section.section_text)
     if issubclass(target, Section):
         if not isinstance(section, Section):
             raise TypeError(
-                f"section {section.name} is free text but "
+                f"section {section.section_name} is free text but "
                 f"{target.__name__} is a key/value section"
             )
-        return target(section.name, section.fields)
+        return target(section.section_name, section.section_fields)
     raise TypeError(f"{target.__name__} is not a section class")

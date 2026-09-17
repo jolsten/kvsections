@@ -46,8 +46,8 @@ def format_value(key: str, value: str) -> str:
 def pack_pairs(section: Section, available: int | None) -> list[str]:
     """Render a section's pairs as content lines of at most ``available`` columns."""
     pairs = []
-    for key, value in section.fields.items():
-        _check_name(key, f"key in section {section.name}")
+    for key, value in section.section_fields.items():
+        _check_name(key, f"key in section {section.section_name}")
         pairs.append(f"{key}={format_value(key, value)}")
     if available is None:
         return [" ".join(pairs)] if pairs else []
@@ -56,13 +56,13 @@ def pack_pairs(section: Section, available: int | None) -> list[str]:
 
 def text_lines(section: TextSection, available: int | None) -> list[str]:
     """Render a text section's lines, word-wrapping any that are too long."""
-    text = section.text
+    text = section.section_text
     if not isinstance(text, str):
-        raise TypeError(f"text of section {section.name} must be a str")
+        raise TypeError(f"text of section {section.section_name} must be a str")
     bad = set(text) - TEXT_CHARS - {"\n"}
     if bad:
         raise ValueError(
-            f"text of section {section.name} contains control or non-ASCII "
+            f"text of section {section.section_name} contains control or non-ASCII "
             f"characters: {''.join(sorted(bad))!r}"
         )
     lines = text.split("\n")
@@ -105,10 +105,10 @@ def format_document(
             raise ValueError("width must be at least 1")
         if margin < 0 or margin >= width:
             raise ValueError(f"margin must be between 0 and {width - 1}")
-    for section in doc.sections.values():
+    for section in doc.document_sections.values():
         if not isinstance(section, BaseSection):
             raise TypeError(f"{section!r} is not a section")
-    names = [section.name for section in doc.sections.values()]
+    names = [section.section_name for section in doc.document_sections.values()]
     if indent is None:
         indent = max((len(name) for name in names), default=0) + 1
     if indent < 1:
@@ -120,19 +120,20 @@ def format_document(
         )
 
     out: list[str] = []
-    for section in doc.sections.values():
-        _check_name(section.name, "section name")
-        expected = type(doc).section_type_for(section.name)
+    for section in doc.document_sections.values():
+        _check_name(section.section_name, "section name")
+        expected = type(doc).document_section_type(section.section_name)
         if issubclass(expected, TextSection) != isinstance(section, TextSection):
             kind = (
                 "free text" if issubclass(expected, TextSection) else "key/value pairs"
             )
             raise ValueError(
-                f"section {section.name} must hold {kind} in a {type(doc).__name__}"
+                f"section {section.section_name} must hold {kind} "
+                f"in a {type(doc).__name__}"
             )
-        if len(section.name) >= indent:
+        if len(section.section_name) >= indent:
             raise ValueError(
-                f"section name {section.name} does not fit in an indent "
+                f"section name {section.section_name} does not fit in an indent "
                 f"of {indent} columns"
             )
         if isinstance(section, TextSection):
@@ -141,7 +142,7 @@ def format_document(
             assert isinstance(section, Section)
             body = pack_pairs(section, available)
         for index, content in enumerate(body or [""]):
-            lead = section.name.ljust(indent) if index == 0 else " " * indent
+            lead = section.section_name.ljust(indent) if index == 0 else " " * indent
             line = (lead + content).rstrip()
             if width is not None:
                 line = line.ljust(width)

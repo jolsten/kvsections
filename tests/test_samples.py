@@ -7,6 +7,7 @@ from helpers import (
     GOLDEN,
     GOLDEN_DOCUMENT,
     CommentDocument,
+    names,
 )
 from kvsections import (
     ParseError,
@@ -36,27 +37,30 @@ def test_sample_file_is_fixed_width_ascii_records():
 
 
 def test_sample_parses_to_expected_document():
-    doc = CommentDocument.read(GOLDEN)
-    assert doc.warnings == []
+    doc = CommentDocument.document_read(GOLDEN)
+    assert doc.document_warnings == []
     assert doc == GOLDEN_DOCUMENT
     # equality ignores order; the file order must be preserved too
-    assert list(doc) == list(GOLDEN_DOCUMENT)
-    for name in doc:
-        if isinstance(doc[name], Section):
-            assert list(doc[name]) == list(GOLDEN_DOCUMENT[name])
+    assert names(doc) == names(GOLDEN_DOCUMENT)
+    for name, section in doc:
+        if isinstance(section, Section):
+            assert list(section) == list(GOLDEN_DOCUMENT[name])
 
 
 def test_sample_round_trips_byte_for_byte():
     original = GOLDEN.read_bytes()
-    doc = CommentDocument.read(GOLDEN)
-    assert doc.dumps(indent=12, newline="\r\n").encode("ascii") == original
+    doc = CommentDocument.document_read(GOLDEN)
+    assert doc.document_dumps(indent=12, newline="\r\n").encode("ascii") == original
     # the same bytes come out of a document built in code, without the reader
-    assert GOLDEN_DOCUMENT.dumps(indent=12, newline="\r\n").encode("ascii") == original
+    assert (
+        GOLDEN_DOCUMENT.document_dumps(indent=12, newline="\r\n").encode("ascii")
+        == original
+    )
 
 
 def test_write_and_read_file(tmp_path):
     path = tmp_path / "out.txt"
-    doc = CommentDocument.read(GOLDEN)
+    doc = CommentDocument.document_read(GOLDEN)
     kvsections.write(doc, path, indent=12, newline="\r\n")
     assert path.read_bytes() == GOLDEN.read_bytes()
     with open(path, "wb") as fp:
@@ -70,41 +74,41 @@ def test_write_and_read_file(tmp_path):
 
 
 def test_sample_parses_without_raising(sample):
-    doc = CommentDocument.read(sample)
+    doc = CommentDocument.document_read(sample)
     records = split_records(sample.read_bytes().decode("ascii", "replace"))
-    for warning in doc.warnings:
+    for warning in doc.document_warnings:
         assert 1 <= warning.lineno <= max(len(records), 1)
-    if doc.warnings:
+    if doc.document_warnings:
         with pytest.raises(ParseError):
-            CommentDocument.read(sample, strict=True)
+            CommentDocument.document_read(sample, strict=True)
     else:
-        assert CommentDocument.read(sample, strict=True) == doc
+        assert CommentDocument.document_read(sample, strict=True) == doc
 
 
 def test_sample_round_trips_through_the_model(sample):
-    doc = CommentDocument.read(sample)
+    doc = CommentDocument.document_read(sample)
     try:
-        out = doc.dumps()
+        out = doc.document_dumps()
     except ValueError:
-        assert doc.warnings, (
+        assert doc.document_warnings, (
             "the writer refused a document the reader did not warn about"
         )
         return
-    again = CommentDocument.loads(out)
+    again = CommentDocument.document_loads(out)
     assert again == doc
-    assert again.warnings == []
-    assert again.dumps() == out  # writing is idempotent
+    assert again.document_warnings == []
+    assert again.document_dumps() == out  # writing is idempotent
 
 
 def test_sample_survives_the_layout_helpers(sample):
     text = sample.read_bytes().decode("ascii", "replace")
     assert reorder_records(text, [...]) == text
-    doc = CommentDocument.loads(text)
-    wrapped = CommentDocument.loads(wrap_records(text))
-    assert list(wrapped) == list(doc)
-    for name, section in doc.items():
+    doc = CommentDocument.document_loads(text)
+    wrapped = CommentDocument.document_loads(wrap_records(text))
+    assert names(wrapped) == names(doc)
+    for name, section in doc:
         if isinstance(section, TextSection):
-            assert wrapped[name].text.split() == section.text.split()
+            assert wrapped[name].section_text.split() == section.section_text.split()
         else:
             assert wrapped[name] == section
 
@@ -116,7 +120,7 @@ def test_golden_samples_reproduce_byte_for_byte(golden_sample):
     indent = next(record.content_col for record in records if record.kind == HEADER)
     lengths = {len(record.line) for record in records if record.kind != BLANK}
     width = lengths.pop() if len(lengths) == 1 else None
-    doc = CommentDocument.read(golden_sample)
-    assert doc.warnings == []
-    out = doc.dumps(width=width, indent=indent, newline=newline)
+    doc = CommentDocument.document_read(golden_sample)
+    assert doc.document_warnings == []
+    out = doc.document_dumps(width=width, indent=indent, newline=newline)
     assert out.encode("ascii") == data

@@ -20,7 +20,7 @@ Typical use::
     kvsections.write(doc, "out.txt")
 
 The reader tolerates malformed input and lists what it tolerated in
-``doc.warnings``; the writer is strict and raises ``ValueError`` for content
+``doc.document_warnings``; the writer is strict and raises ``ValueError`` for content
 that would not read back. Subclass :class:`Document` and :class:`Section` with
 :class:`SectionField` and :class:`Field` descriptors to describe a specific
 file with typed attributes. Values are always strings; a field declared with
@@ -68,9 +68,9 @@ __all__ = [
 # ``load`` and ``read`` parse into a plain Document, and ``dumps``, ``dump``
 # and ``write`` take the document as their first argument. A schema class
 # offers the same methods for typed documents.
-loads = Document.loads
-load = Document.load
-read = Document.read
-dumps = Document.dumps
-dump = Document.dump
-write = Document.write
+loads = Document.document_loads
+load = Document.document_load
+read = Document.document_read
+dumps = Document.document_dumps
+dump = Document.document_dump
+write = Document.document_write

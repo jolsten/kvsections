@@ -8,13 +8,18 @@ SAMPLES = Path(__file__).resolve().parent / "samples"
 GOLDEN = SAMPLES / "golden.txt"
 
 
+def names(doc):
+    """The section names of a document in order; documents iterate as pairs."""
+    return [name for name, _ in doc]
+
+
 # Everything golden.txt contains, in file order. Values stay strings, so
 # leading zeros and comma-separated lists survive verbatim.
 class CommentDocument(Document):
     """The generic document plus COMMENT and COMMENTS as free text."""
 
-    comment = SectionField(TextSection, "COMMENT")
-    comments = SectionField(TextSection, "COMMENTS")
+    comment = SectionField(TextSection)
+    comments = SectionField(TextSection)
 
 
 GOLDEN_DOCUMENT = CommentDocument(
@@ -72,20 +77,20 @@ GOLDEN_DOCUMENT = CommentDocument(
 
 class HeaderSection(Section):
     section_name = "HEADER"
-    version = Field("VERSION", int)
-    revision = Field("REVISION", int, format="{:03d}".format)
-    author = Field("AUTHOR")
-    owner = Field("OWNER", default="NOBODY")
+    version = Field(int)
+    revision = Field(int, format="{:03d}".format)
+    author = Field()
+    owner = Field(default="NOBODY")
 
 
 class ScheduleSection(Section):
     section_name = "SCHEDULE"
-    interval = Field("INTERVAL", int)
-    days = Field("DAYS", list[str])
-    counts = Field("COUNTS", list[int])
+    interval = Field(int)
+    days = Field(list[str])
+    counts = Field(list[int])
 
 
 class SampleDocument(Document):
     header = SectionField(HeaderSection)
     schedule = SectionField(ScheduleSection)
-    comments = SectionField(TextSection, "COMMENTS", aliases=("COMMENT",))
+    comments = SectionField(TextSection, aliases=("COMMENT",))

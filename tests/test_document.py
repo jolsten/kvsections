@@ -1,4 +1,4 @@
-"""Document: mapping protocol, schemas, registry inheritance, aliases, order."""
+"""Document: container protocol, schemas, registry inheritance, aliases, order."""
 
 import pytest
 
@@ -9,6 +9,7 @@ from helpers import (
     HeaderSection,
     SampleDocument,
     ScheduleSection,
+    names,
 )
 from kvsections import (
     BaseSection,
@@ -21,24 +22,25 @@ from kvsections import (
 from kvsections.model import convert_section
 
 
-def test_document_mapping_behaviour():
+def test_document_container_behaviour():
     doc = Document()
     doc["a"] = Section("A", X="1")
     assert "A" in doc and "a" in doc
-    assert doc.get("MISSING") is None
+    assert "MISSING" not in doc
     with pytest.raises(ValueError):
         doc["B"] = Section("C")
     with pytest.raises(TypeError):
-        doc.add("not a section")
-    doc.add(Section("A", X="2"))  # replaces
+        doc.document_add("not a section")
+    doc.document_add(Section("A", X="2"))  # replaces
     assert doc["A"]["X"] == "2"
     assert len(doc) == 1
     assert doc == Document([Section("A", X="2")])
     assert doc != Document()
+    assert list(doc) == [("A", doc["A"])]
 
 
 def test_typed_read():
-    doc = SampleDocument.read(GOLDEN)
+    doc = SampleDocument.document_read(GOLDEN)
     assert isinstance(doc["HEADER"], HeaderSection)
     assert doc.header.version == 1
     assert doc.header.revision == 3
@@ -57,7 +59,7 @@ def test_typed_write_and_formatting():
     doc.header.author = "EXAMPLE"
     doc.schedule.days = ["MON", "FRI"]
     doc.schedule.counts = [1, 2, 3]
-    assert doc.dumps(width=None, newline="\n") == (
+    assert doc.document_dumps(width=None, newline="\n") == (
         "HEADER   VERSION=7 REVISION=012 AUTHOR=EXAMPLE\n"
         "SCHEDULE DAYS=MON,FRI COUNTS=1,2,3\n"
     )
@@ -90,28 +92,37 @@ def test_section_field_requires_explicit_creation():
 
 def test_generic_section_is_converted_when_added_to_typed_document():
     doc = SampleDocument()
-    stored = doc.add(Section("HEADER", VERSION="3"))
+    stored = doc.document_add(Section("HEADER", VERSION="3"))
     assert isinstance(stored, HeaderSection)
     assert doc.header.version == 3
-    doc.sections["HEADER"] = Section("HEADER", VERSION="4")  # bypass add()
+    doc.document_sections["HEADER"] = Section("HEADER", VERSION="4")  # bypass add
     assert doc.header.version == 4
     assert isinstance(doc["HEADER"], HeaderSection)
     with pytest.raises(TypeError):
-        doc.add(TextSection("HEADER", "text"))
+        doc.document_add(TextSection("HEADER", "text"))
 
 
 def test_registry_is_inherited_and_extended():
     class ConfigSection(Section):
         section_name = "CONFIG"
-        buffer = Field("BUFFER", int)
+        buffer = Field(int)
 
     class Extended(SampleDocument):
         config = SectionField(ConfigSection)
 
-    assert set(Extended.section_types) == {"HEADER", "SCHEDULE", "COMMENTS", "CONFIG"}
-    assert set(SampleDocument.section_types) == {"HEADER", "SCHEDULE", "COMMENTS"}
-    assert Extended.section_aliases == {"COMMENT": "COMMENTS"}
-    doc = Extended.read(GOLDEN)
+    assert set(Extended.document_section_types) == {
+        "HEADER",
+        "SCHEDULE",
+        "COMMENTS",
+        "CONFIG",
+    }
+    assert set(SampleDocument.document_section_types) == {
+        "HEADER",
+        "SCHEDULE",
+        "COMMENTS",
+    }
+    assert Extended.document_aliases == {"COMMENT": "COMMENTS"}
+    doc = Extended.document_read(GOLDEN)
     assert doc.config.buffer == 4096
     assert doc.header.version == 1
 
@@ -132,37 +143,111 @@ def test_registrations_merge_across_multiple_inheritance():
     class WithMixin(Mixin, Left):
         pass
 
-    assert set(Both.section_types) == {"HEADER", "SCHEDULE"}
-    assert Both.section_aliases == {"SCHED": "SCHEDULE"}
-    assert set(WithMixin.section_types) == {"HEADER"}
-    doc = Both.loads("HEADER VERSION=1\nSCHED INTERVAL=5\n")
+    assert set(Both.document_section_types) == {"HEADER", "SCHEDULE"}
+    assert Both.document_aliases == {"SCHED": "SCHEDULE"}
+    assert set(WithMixin.document_section_types) == {"HEADER"}
+    doc = Both.document_loads("HEADER VERSION=1\nSCHED INTERVAL=5\n")
     assert doc.header.version == 1
     assert doc.schedule.interval == 5
 
 
-def test_section_field_requires_a_name():
+def test_section_field_rejects_non_section_classes():
     with pytest.raises(TypeError):
-        SectionField(Section)
+        SectionField(str)
     with pytest.raises(TypeError):
-        SectionField(str, "X")
+        SectionField(str, name="X")
+
+
+def test_section_field_name_comes_from_the_attribute_or_the_class():
+    class Notes(TextSection):
+        section_name = "NOTES"
+
+    class Doc(Document):
+        header = SectionField(HeaderSection)  # the class says HEADER
+        notes = SectionField(Notes)
+        comments = SectionField(TextSection)  # from the attribute
+        class_ = SectionField(Section)  # trailing underscore for a keyword
+        my_notes = SectionField(TextSection, name="MY-NOTES")  # a non-identifier
+        items = SectionField(Section)  # a former mapping method name
+
+    assert Doc.document_section_types == {
+        "HEADER": HeaderSection,
+        "NOTES": Notes,
+        "COMMENTS": TextSection,
+        "CLASS": Section,
+        "MY-NOTES": TextSection,
+        "ITEMS": Section,
+    }
+    doc = Doc.document_loads("CLASS A=1\nMY-NOTES text\nITEMS B=2\n")
+    assert doc.class_["A"] == "1"
+    assert doc.my_notes.section_text == "text"
+    assert doc.items["B"] == "2"
+    assert repr(Doc.my_notes) == "SectionField(TextSection, 'MY-NOTES')"
+
+
+def test_section_field_declarations_are_checked_when_the_class_is_created():
+    with pytest.raises(TypeError, match="named HEADER; name the attribute"):
+
+        class Renamed(Document):
+            hdr = SectionField(HeaderSection)
+
+    with pytest.raises(TypeError, match="named HEADER, not HDR"):
+        SectionField(HeaderSection, name="HDR")
+
+    class Explicit(Document):
+        hdr = SectionField(HeaderSection, name="HEADER")  # explicit, so allowed
+
+    assert Explicit.document_section_types == {"HEADER": HeaderSection}
+
+    with pytest.raises(TypeError, match="starting with 'document_' are reserved"):
+
+        class Reserved(Document):
+            document_x = SectionField(Section)
+
+    with pytest.raises(TypeError, match="cannot name a section"):
+
+        class Underscore(Document):
+            _ = SectionField(Section)
+
+    with pytest.raises(TypeError, match="declares a key of a Section"):
+
+        class WithField(Document):
+            x = Field()
+
+    class Plain:
+        def total(self):
+            return 0
+
+    with pytest.raises(TypeError, match=r"Mixed\.total would shadow Plain\.total"):
+
+        class Mixed(Plain, Document):
+            total = SectionField(Section)
+
+    class Mixin:
+        header = SectionField(HeaderSection)  # harmless until mixed in
+
+    with pytest.raises(TypeError, match="never registered"):
+
+        class WithMixin(Document, Mixin):
+            pass
 
 
 def test_generic_document_has_no_aliases():
     doc = kvsections.loads("COMMENT X=1\nCOMMENTS Y=2\n")
     assert isinstance(doc["COMMENT"], Section)  # no free text by default
-    assert Document.section_aliases == {}
-    assert list(doc) == ["COMMENT", "COMMENTS"]
-    assert doc.warnings == []
+    assert Document.document_aliases == {}
+    assert names(doc) == ["COMMENT", "COMMENTS"]
+    assert doc.document_warnings == []
 
 
 def test_alias_is_found_under_either_name_and_keeps_its_spelling():
-    doc = SampleDocument.loads("HEADER VERSION=1\nCOMMENT some text\n")
-    assert list(doc) == ["HEADER", "COMMENTS"]
+    doc = SampleDocument.document_loads("HEADER VERSION=1\nCOMMENT some text\n")
+    assert names(doc) == ["HEADER", "COMMENTS"]
     assert doc["COMMENTS"] is doc["COMMENT"] is doc.comments
     assert "comment" in doc and "COMMENTS" in doc
-    assert doc.comments.name == "COMMENT"  # the spelling the file used
-    assert doc.comments.text == "some text"
-    assert doc.dumps(width=None, newline="\n") == (
+    assert doc.comments.section_name == "COMMENT"  # the spelling the file used
+    assert doc.comments.section_text == "some text"
+    assert doc.document_dumps(width=None, newline="\n") == (
         "HEADER  VERSION=1\nCOMMENT some text\n"
     )
     del doc["COMMENT"]
@@ -170,11 +255,11 @@ def test_alias_is_found_under_either_name_and_keeps_its_spelling():
 
 
 def test_both_spellings_in_one_file_are_merged_with_a_warning():
-    doc = SampleDocument.loads("COMMENTS first\nCOMMENT second\n")
-    assert list(doc) == ["COMMENTS"]
-    assert doc.comments.name == "COMMENTS"
-    assert doc.comments.text == "first\nsecond"
-    assert [str(w) for w in doc.warnings] == [
+    doc = SampleDocument.document_loads("COMMENTS first\nCOMMENT second\n")
+    assert names(doc) == ["COMMENTS"]
+    assert doc.comments.section_name == "COMMENTS"
+    assert doc.comments.section_text == "first\nsecond"
+    assert [str(w) for w in doc.document_warnings] == [
         "line 2: duplicate section COMMENT (alias of COMMENTS); "
         "merged into the earlier one"
     ]
@@ -183,12 +268,13 @@ def test_both_spellings_in_one_file_are_merged_with_a_warning():
 def test_sections_built_in_code_use_the_canonical_name():
     doc = SampleDocument()
     doc.comments = "built"
-    assert doc.comments.name == "COMMENTS"
+    assert doc.comments.section_name == "COMMENTS"
     # storing or assigning under an alias is accepted and keeps that spelling
     doc["COMMENT"] = TextSection("COMMENT", "stored")
-    assert doc.comments.text == "stored" and doc.comments.name == "COMMENT"
+    assert doc.comments.section_text == "stored"
+    assert doc.comments.section_name == "COMMENT"
     doc.comments = TextSection("COMMENT", "assigned")
-    assert doc["COMMENTS"].text == "assigned"
+    assert doc["COMMENTS"].section_text == "assigned"
     assert len(doc) == 1
     with pytest.raises(ValueError):
         doc["COMMENTS"] = TextSection("NOTES")
@@ -198,54 +284,59 @@ def test_sections_built_in_code_use_the_canonical_name():
 
 def test_class_level_aliases_are_inherited_and_extended():
     class Base(Document):
-        section_aliases = {"cfg": "config"}
+        document_aliases = {"cfg": "config"}
 
     class Derived(Base):
-        section_aliases = {"HDR": "HEADER"}
-        comments = SectionField(TextSection, "COMMENTS", aliases=("COMMENT",))
+        document_aliases = {"HDR": "HEADER"}
+        comments = SectionField(TextSection, aliases=("COMMENT",))
 
-    assert Base.section_aliases == {"CFG": "CONFIG"}
-    assert Derived.section_aliases == {
+    assert Base.document_aliases == {"CFG": "CONFIG"}
+    assert Derived.document_aliases == {
         "CFG": "CONFIG",
         "HDR": "HEADER",
         "COMMENT": "COMMENTS",
     }
-    doc = Derived.loads("CFG MODE=X\nHDR VERSION=1\n")
-    assert list(doc) == ["CONFIG", "HEADER"]
-    assert [section.name for section in doc.values()] == ["CFG", "HDR"]
+    doc = Derived.document_loads("CFG MODE=X\nHDR VERSION=1\n")
+    assert names(doc) == ["CONFIG", "HEADER"]
+    assert [section.section_name for _, section in doc] == ["CFG", "HDR"]
     assert doc["config"]["MODE"] == "X"
-    assert doc.section_type_for("cfg") is Section
-    assert Derived.section_type_for("comment") is TextSection
+    assert doc.document_section_type("cfg") is Section
+    assert Derived.document_section_type("comment") is TextSection
 
 
 def test_conflicting_aliases_are_rejected():
     with pytest.raises(TypeError, match="registered as a section"):
 
         class AliasOfAnotherSection(Document):
-            a = SectionField(Section, "A", aliases=("B",))
-            b = SectionField(Section, "B")
+            a = SectionField(Section, aliases=("B",))
+            b = SectionField(Section)
 
     with pytest.raises(TypeError, match="already an alias"):
 
         class AliasUsedTwice(Document):
-            a = SectionField(Section, "A", aliases=("X",))
-            b = SectionField(Section, "B", aliases=("X",))
+            a = SectionField(Section, aliases=("X",))
+            b = SectionField(Section, aliases=("X",))
 
     with pytest.raises(TypeError, match="is an alias itself"):
 
         class ChainedAlias(Document):
-            section_aliases = {"A": "B", "B": "C"}
+            document_aliases = {"A": "B", "B": "C"}
 
-    with pytest.raises(ValueError):
-        SectionField(Section, "A", aliases=("a",))
+    with pytest.raises(ValueError, match="alias of itself"):
+        SectionField(Section, name="A", aliases=("a",))
+
+    with pytest.raises(ValueError, match="alias of itself"):
+
+        class SelfAlias(Document):
+            a = SectionField(Section, aliases=("A",))
 
 
 def test_reorder_with_head_else_and_tail():
-    doc = CommentDocument.read(GOLDEN)
-    sections = doc.sections  # reordering happens in place
-    doc.reorder(["OUTPUT", "header", "MISSING", ..., "SOURCE", "COMMENTS"])
-    assert doc.sections is sections
-    assert list(doc) == [
+    doc = CommentDocument.document_read(GOLDEN)
+    sections = doc.document_sections  # reordering happens in place
+    doc.document_reorder(["OUTPUT", "header", "MISSING", ..., "SOURCE", "COMMENTS"])
+    assert doc.document_sections is sections
+    assert names(doc) == [
         "OUTPUT",
         "HEADER",
         "CONFIG",
@@ -257,46 +348,47 @@ def test_reorder_with_head_else_and_tail():
         "SOURCE",
         "COMMENTS",
     ]
-    assert doc.dumps(width=None, newline="\n").startswith("OUTPUT     TYPE=REPORT")
-    assert CommentDocument.loads(doc.dumps()) == doc
+    out = doc.document_dumps(width=None, newline="\n")
+    assert out.startswith("OUTPUT     TYPE=REPORT")
+    assert CommentDocument.document_loads(doc.document_dumps()) == doc
 
 
 def test_reorder_without_else_puts_the_rest_after_the_named():
     doc = kvsections.loads("A X=1\nB X=1\nC X=1\nD X=1\n")
-    doc.reorder(["C", "A"])
-    assert list(doc) == ["C", "A", "B", "D"]
-    doc.reorder([..., "A"])
-    assert list(doc) == ["C", "B", "D", "A"]
-    doc.reorder([])
-    assert list(doc) == ["C", "B", "D", "A"]
-    doc.reorder([...])
-    assert list(doc) == ["C", "B", "D", "A"]
+    doc.document_reorder(["C", "A"])
+    assert names(doc) == ["C", "A", "B", "D"]
+    doc.document_reorder([..., "A"])
+    assert names(doc) == ["C", "B", "D", "A"]
+    doc.document_reorder([])
+    assert names(doc) == ["C", "B", "D", "A"]
+    doc.document_reorder([...])
+    assert names(doc) == ["C", "B", "D", "A"]
 
 
 def test_reorder_resolves_aliases_and_uses_the_schema_order():
     class Doc(Document):
-        section_order = ["HEADER", ..., "COMMENTS"]
-        comments = SectionField(TextSection, "COMMENTS", aliases=("COMMENT",))
+        document_order = ["HEADER", ..., "COMMENTS"]
+        comments = SectionField(TextSection, aliases=("COMMENT",))
 
     class Derived(Doc):
         pass
 
-    doc = Derived.loads("COMMENT text\nCONFIG X=1\nHEADER X=1\n")
-    doc.reorder()
-    assert list(doc) == ["HEADER", "CONFIG", "COMMENTS"]
-    doc.reorder(["comment", ...])
-    assert list(doc) == ["COMMENTS", "HEADER", "CONFIG"]
+    doc = Derived.document_loads("COMMENT text\nCONFIG X=1\nHEADER X=1\n")
+    doc.document_reorder()
+    assert names(doc) == ["HEADER", "CONFIG", "COMMENTS"]
+    doc.document_reorder(["comment", ...])
+    assert names(doc) == ["COMMENTS", "HEADER", "CONFIG"]
 
 
 def test_reorder_rejects_bad_specifications():
     doc = kvsections.loads("A X=1\nB X=1\n")
     with pytest.raises(ValueError, match="more than once"):
-        doc.reorder(["A", "a"])
+        doc.document_reorder(["A", "a"])
     with pytest.raises(ValueError, match="only once"):
-        doc.reorder([..., "A", ...])
+        doc.document_reorder([..., "A", ...])
     with pytest.raises(TypeError):
-        doc.reorder(["A", None])
-    assert list(doc) == ["A", "B"]  # untouched after a rejected order
+        doc.document_reorder(["A", None])
+    assert names(doc) == ["A", "B"]  # untouched after a rejected order
 
 
 def test_section_field_repr_and_class_access():
@@ -317,12 +409,12 @@ def test_document_rejects_non_sections_and_converts_text_sections():
     class Doc(Document):
         notes = SectionField(Notes)
 
-    stored = Doc().add(TextSection("NOTES", "hello"))
-    assert isinstance(stored, Notes) and stored.text == "hello"
+    stored = Doc().document_add(TextSection("NOTES", "hello"))
+    assert isinstance(stored, Notes) and stored.section_text == "hello"
     with pytest.raises(TypeError):
         convert_section(TextSection("NOTES"), int)
     with pytest.raises(TypeError, match="text section"):
-        Doc().add(Section("NOTES", X="1"))
+        Doc().document_add(Section("NOTES", X="1"))
 
 
 def test_any_section_is_a_base_section():
@@ -330,22 +422,21 @@ def test_any_section_is_a_base_section():
     assert isinstance(TextSection("A"), BaseSection)
     assert not isinstance("A", BaseSection)
     with pytest.raises(TypeError):
-        SectionField(str, "A")
+        SectionField(str, name="A")
 
 
-def test_documents_build_from_and_update_from_other_documents():
+def test_documents_build_from_other_documents_and_mappings():
     class Schema(Document):
-        comments = SectionField(TextSection, "COMMENTS", aliases=("COMMENT",))
+        comments = SectionField(TextSection, aliases=("COMMENT",))
 
-    typed = Schema.loads("HEADER X=1\nCOMMENT text\n")
-    plain = Document(typed)  # a mapping of sections
-    assert list(plain) == ["HEADER", "COMMENT"]  # stored under their own names
-    assert plain["COMMENT"].text == "text"
-    other = Document([Section("A", Y="2")])
-    other.update(typed)
-    assert list(other) == ["A", "HEADER", "COMMENT"]
-    other.update([("B", Section("B"))], C=Section("C"))
-    assert list(other) == ["A", "HEADER", "COMMENT", "B", "C"]
+    typed = Schema.document_loads("HEADER X=1\nCOMMENT text\n")
+    plain = Document(typed)
+    assert names(plain) == ["HEADER", "COMMENT"]  # stored under their own names
+    assert plain["COMMENT"].section_text == "text"
+    assert Document(dict(typed)) == plain
+    assert Document(list(dict(typed).values())) == plain
+    with pytest.raises(TypeError):
+        Document([("A", Section("A"))])  # pairs are not sections
 
 
 def test_section_field_assignment_type_errors_name_the_attribute():
@@ -357,7 +448,7 @@ def test_section_field_assignment_type_errors_name_the_attribute():
 
 
 def test_module_level_functions_are_the_generic_document_methods():
-    assert kvsections.loads("A X=1") == Document.loads("A X=1")
+    assert kvsections.loads("A X=1") == Document.document_loads("A X=1")
     assert type(kvsections.loads("A X=1")) is Document
     doc = Document([Section("A", X="1")])
-    assert kvsections.dumps(doc, width=None) == doc.dumps(width=None)
+    assert kvsections.dumps(doc, width=None) == doc.document_dumps(width=None)

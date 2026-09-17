@@ -23,20 +23,26 @@ uv run --group dev mypy
   blank), `split_records`, the `TOKEN_CHARS`/`TEXT_CHARS` alphabets, `pack`
   (a `textwrap` wrapper), `plan_order`. Every other module builds on these so
   the rules exist once.
-- `model.py`: `BaseSection`, `Section` (a `MutableMapping[str, str]`),
-  `TextSection`, `convert_section`.
-- `fields.py`: `Field[T]` descriptor, `Converter[T]`, `MISSING`.
+- `model.py`: `BaseSection`, `Section` (subscriptable, iterates `(key, value)`
+  pairs, deliberately not a `Mapping`), `TextSection`, `convert_section`.
+  `Section.__init_subclass__` and `TextSection.__init_subclass__` validate
+  the descriptors declared on subclasses.
+- `fields.py`: `Declaration` (the descriptor base that records its attribute
+  in `__set_name__`), `Field[T]`, `Converter[T]`, `MISSING`, `name_from_attr`
+  and `check_declaration` (the reserved-name rules, shared with `SectionField`).
 - `errors.py`: `ParseWarning`, `ParseError`.
 - `reader.py`: tolerant parser. `writer.py`: strict renderer.
-- `document.py`: `Document` (a `MutableMapping[str, BaseSection]`),
-  `SectionField`, schema registry and alias merging, `reorder`, I/O methods.
+- `document.py`: `Document` (subscriptable, iterates `(name, section)` pairs,
+  not a `Mapping`), `SectionField`, schema registry and alias merging,
+  `document_reorder`, the I/O methods; every library name on it starts with
+  `document_`.
 - `layout.py`: `wrap_records` and `reorder_records`, text-level and
   byte-preserving. `converters.py`: ready-made parse/format pairs.
 - `__init__.py`: `loads`/`load`/`read`/`dumps`/`dump`/`write` are bound
-  straight from `Document`; do not re-wrap them.
-- `tests/`: one file per module, shared fixtures in `helpers.py`,
-  `conftest.py` parametrizes `sample` over `tests/samples/*.txt` and
-  `golden_sample` over `golden*.txt`.
+  straight from `Document.document_loads` and friends; do not re-wrap them.
+- `tests/`: one file per module, shared fixtures in `helpers.py` (including
+  `names(doc)`, since documents iterate pairs), `conftest.py` parametrizes
+  `sample` over `tests/samples/*.txt` and `golden_sample` over `golden*.txt`.
 
 ## Design decisions (confirmed with the owner)
 
@@ -48,12 +54,12 @@ Do not reverse these without asking.
    case-insensitive.
 3. Assigning `None` removes a key or a declared section.
 4. The generic `Document` reads every section as pairs. Free text is a
-   schema declaration: `SectionField(TextSection, "COMMENTS")`. There is no
+   schema declaration: `comments = SectionField(TextSection)`. There is no
    default list of free-text names.
 5. The reader is maximally tolerant: every tolerated problem goes into
-   `doc.warnings` with a line number, `strict=True` raises at the first.
-   Duplicate sections merge, duplicate keys keep the last value, bare tokens
-   get an empty value, undecodable bytes and BOMs are reported.
+   `doc.document_warnings` with a line number, `strict=True` raises at the
+   first. Duplicate sections merge, duplicate keys keep the last value, bare
+   tokens get an empty value, undecodable bytes and BOMs are reported.
 6. The writer is strict about content (character set, upper case, section
    kind) but record width is a convention: over-long pairs or words go on a
    record of their own and are never refused.
@@ -73,12 +79,45 @@ Do not reverse these without asking.
     directions; `%y` follows Python's 1969 pivot.
 11. Reading a declared section the document lacks raises `AttributeError`,
     exactly like a missing typed key. Reading never mutates. Create with
-    `doc.header = {}` or `doc.add(...)`.
-12. Section order is not part of the format; `reorder` and `section_order`
-    are opt-in and the writer never reorders.
+    `doc.header = {}` or `doc.document_add(...)`. Field defaults exist
+    (`Field(default=...)`); section defaults do not, on purpose.
+12. Section order is not part of the format; `document_reorder` and
+    `document_order` are opt-in and the writer never reorders.
 13. Python 3.9 minimum, zero runtime dependencies, no pydantic/attrs, stdlib
     where it fits (`textwrap`). No CLI; the old entry point was removed on
     purpose.
+14. The attribute names the key or section. `version = Field(int)` is the key
+    VERSION and `header = SectionField(HeaderSection)` the section HEADER;
+    one trailing underscore is dropped (`class_` is CLASS). `key=` and
+    `name=` are keyword-only and exist for names that are not identifiers,
+    never as a workaround for a name the library took. A section class's
+    `section_name` must agree with the attribute unless `name=` is explicit.
+    The owner considers an attribute that silently differs from its key a
+    footgun.
+15. The library's own names live in prefixed namespaces, pydantic's
+    `model_*` pattern: `section_*` on `Section`/`TextSection`
+    (`section_name`, `section_fields`, `section_text`) and `document_*` on
+    `Document` (`document_sections`, `document_warnings`, `document_add`,
+    `document_reorder`, `document_loads/load/read/dumps/dump/write`,
+    `document_canonical_name`, `document_section_type`,
+    `document_new_section`, and the class config `document_section_types`,
+    `document_aliases`, `document_order`). Every other attribute of a
+    subclass is the user's. Never add an unprefixed public name to either
+    class, and never make them mappings again: the mixin's method names are
+    unprefixed and mypy rejects a field that overrides one. The owner's
+    files never use underscores in keys or section names, which is what
+    makes the prefixes collision-free.
+16. Bad declarations fail when the class is created, as a plain `TypeError`
+    raised from `__init_subclass__`, never from `__set_name__` (Python 3.11
+    and earlier wrap those in `RuntimeError`). Rejected: a prefixed
+    attribute, an attribute a base class defines as something other than
+    the same descriptor kind, a `Field` on a `TextSection` or `Document`, a
+    `SectionField` on a section class or on a plain mixin, and a
+    `SectionField` whose attribute disagrees with the class's `section_name`.
+    Redeclaring an inherited `Field` and `Field` mixins are allowed.
+17. Constructor parameters `name`, `fields`, `text` and `sections` are
+    positional-only, so every keyword argument to a section is a key
+    (`HeaderSection(name="X")` stores NAME).
 
 ## CI and releases
 
@@ -106,6 +145,9 @@ Do not reverse these without asking.
 - Source files are LF. When writing files from a script on Windows, open
   them with `newline="\n"`; a plain text-mode write converts to CRLF
   silently, and this has bitten the project before.
+- `dict(x)` calls `x.keys()` when the attribute exists, so a section or
+  document declaring a field or section called `keys` converts with
+  `dict(iter(x))`. This is CPython's rule and is documented in the README.
 - Keep README examples runnable against `tests/samples/golden.txt`; they
   have been executed after every change so far.
 - The README and the docstrings are the user documentation; update both

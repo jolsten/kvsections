@@ -37,40 +37,40 @@ from kvsections.converters import (
 def test_date_and_time_converters_round_trip():
     class Header(Section):
         section_name = "HEADER"
-        created = Field("CREATED", YYYYMMDD)
-        short = Field("SHORT", YYMMDD)
+        created = Field(YYYYMMDD)
+        short = Field(YYMMDD)
 
     class Schedule(Section):
         section_name = "SCHEDULE"
-        start = Field("START", HHMMSS)
-        stop = Field("STOP", HHMM)
-        dates = Field("DATES", list[YYYYMMDD], default=())
+        start = Field(HHMMSS)
+        stop = Field(HHMM)
+        dates = Field(list[YYYYMMDD], default=())
 
-    header = Header(fields={"CREATED": "20240101", "SHORT": "001210"})
+    header = Header(CREATED="20240101", SHORT="001210")
     assert header.created == date(2024, 1, 1)
     assert header.short == date(2000, 12, 10)
     header.created = date(2025, 2, 3)
     header.short = date(1999, 12, 31)
-    assert header.fields == {"CREATED": "20250203", "SHORT": "991231"}
+    assert header.section_fields == {"CREATED": "20250203", "SHORT": "991231"}
 
-    schedule = Schedule(fields={"START": "080000", "STOP": "1730"})
+    schedule = Schedule(START="080000", STOP="1730")
     assert schedule.start == time(8, 0, 0)
     assert schedule.stop == time(17, 30)
     assert schedule.dates == []
     schedule.dates = [date(2024, 1, 1), date(2024, 1, 2)]
-    assert schedule.fields["DATES"] == "20240101,20240102"
+    assert schedule.section_fields["DATES"] == "20240101,20240102"
     assert schedule.dates == [date(2024, 1, 1), date(2024, 1, 2)]
     with pytest.raises(ValueError):
-        _ = Schedule(fields={"START": "8am"}).start
+        _ = Schedule(START="8am").start
 
 
 def test_two_digit_years_follow_pythons_pivot_in_both_directions():
     class H(Section):
         section_name = "H"
-        d = Field("D", YYMMDD)
+        d = Field(YYMMDD)
 
-    assert H(fields={"D": "690101"}).d == date(1969, 1, 1)
-    assert H(fields={"D": "680101"}).d == date(2068, 1, 1)
+    assert H(D="690101").d == date(1969, 1, 1)
+    assert H(D="680101").d == date(2068, 1, 1)
     h = H()
     h.d = date(2068, 12, 31)
     assert h["D"] == "681231"
@@ -84,15 +84,15 @@ def test_two_digit_years_follow_pythons_pivot_in_both_directions():
 def test_time_and_datetime_converters_reject_lossy_values():
     class S(Section):
         section_name = "S"
-        t = Field("T", HHMMSS)
-        m = Field("M", HHMM)
-        dt = Field("DT", YYYYMMDDHHMMSS)
+        t = Field(HHMMSS)
+        m = Field(HHMM)
+        dt = Field(YYYYMMDDHHMMSS)
 
     s = S()
     s.t = time(8, 0, 0)
     s.dt = datetime(2024, 1, 1, 8, 0, 0)
-    assert s.fields == {"T": "080000", "DT": "20240101080000"}
-    assert S(fields={"DT": "20240101080000"}).dt == datetime(2024, 1, 1, 8)
+    assert s.section_fields == {"T": "080000", "DT": "20240101080000"}
+    assert S(DT="20240101080000").dt == datetime(2024, 1, 1, 8)
     with pytest.raises(ValueError, match="reads back"):
         s.t = time(8, 0, 0, 500)
     with pytest.raises(ValueError, match="reads back"):
@@ -102,14 +102,14 @@ def test_time_and_datetime_converters_reject_lossy_values():
 def test_custom_strftime_patterns():
     class S(Section):
         section_name = "S"
-        d = Field("D", date_format("%d/%m/%Y"))
-        t = Field("T", time_format("%H:%M"))
+        d = Field(date_format("%d/%m/%Y"))
+        t = Field(time_format("%H:%M"))
 
-    s = S(fields={"D": "31/12/2024", "T": "17:30"})
+    s = S(D="31/12/2024", T="17:30")
     assert (s.d, s.t) == (date(2024, 12, 31), time(17, 30))
     s.d = date(2025, 1, 2)
     s.t = time(8, 5)
-    assert s.fields == {"D": "02/01/2025", "T": "08:05"}
+    assert s.section_fields == {"D": "02/01/2025", "T": "08:05"}
     with pytest.raises(ValueError, match="reads back"):
         s.t = time(8, 5, 30)
 
@@ -121,16 +121,16 @@ def test_zero_padded_flag_choice_and_enum_converters():
 
     class Items(Section):
         section_name = "ITEMS"
-        size = Field("SIZE", zero_padded(6))
-        on = Field("ON", flag("ON", "OFF"))
-        level = Field("LEVEL", one_of("LOW", "HIGH"))
-        by_value = Field("BYVALUE", enum_by_value(Mode))
-        by_name = Field("BYNAME", enum_by_name(Mode))
+        size = Field(zero_padded(6))
+        on = Field(flag("ON", "OFF"))
+        level = Field(one_of("LOW", "HIGH"))
+        by_value = Field(enum_by_value(Mode), key="BYVALUE")
+        by_name = Field(enum_by_name(Mode), key="BYNAME")
 
     items = Items(
         size=1024, on=False, level="LOW", by_value=Mode.FAST, by_name=Mode.FAST
     )
-    assert items.fields == {
+    assert items.section_fields == {
         "SIZE": "001024",
         "ON": "OFF",
         "LEVEL": "LOW",
@@ -157,13 +157,13 @@ def test_zero_padded_flag_choice_and_enum_converters():
 def test_zero_padded_requires_digits_that_fit_the_width():
     class Z(Section):
         section_name = "Z"
-        n = Field("N", zero_padded(3))
+        n = Field(zero_padded(3))
 
-    assert Z(fields={"N": "007"}).n == 7
-    assert Z(fields={"N": "7"}).n == 7  # narrower than declared still reads
+    assert Z(N="007").n == 7
+    assert Z(N="7").n == 7  # narrower than declared still reads
     for bad in ("1234", "1_2", "-12", "1.5", "abc", ""):
         with pytest.raises(ValueError, match="digits"):
-            _ = Z(fields={"N": bad}).n
+            _ = Z(N=bad).n
     z = Z()
     z.n = 7
     assert z["N"] == "007"
@@ -178,7 +178,7 @@ def test_zero_padded_requires_digits_that_fit_the_width():
 def test_flag_accepts_bools_and_its_own_spellings_only():
     class Cfg(Section):
         section_name = "CONFIG"
-        enabled = Field("ENABLED", YES_NO)
+        enabled = Field(YES_NO)
 
     cfg = Cfg()
     cfg.enabled = True
@@ -204,7 +204,7 @@ def test_enum_by_value_rejects_non_members_on_assignment():
 
     class S(Section):
         section_name = "S"
-        mode = Field("MODE", enum_by_value(Mode))
+        mode = Field(enum_by_value(Mode))
 
     s = S()
     s.mode = "N"  # the value itself is accepted
@@ -216,32 +216,33 @@ def test_enum_by_value_rejects_non_members_on_assignment():
 def test_converters_on_the_sample():
     class Header(Section):
         section_name = "HEADER"
-        created = Field("CREATED", YYYYMMDD)
-        revision = Field("REVISION", zero_padded(3))
+        created = Field(YYYYMMDD)
+        revision = Field(zero_padded(3))
 
     class Config(Section):
         section_name = "CONFIG"
-        enabled = Field("ENABLED", YES_NO)
-        mode = Field("MODE", one_of("NORMAL", "FAST"))
+        enabled = Field(YES_NO)
+        mode = Field(one_of("NORMAL", "FAST"))
 
     class Schedule(Section):
         section_name = "SCHEDULE"
-        start = Field("START", HHMMSS)
-        stop = Field("STOP", HHMMSS)
+        start = Field(HHMMSS)
+        stop = Field(HHMMSS)
 
     class Doc(CommentDocument):
         header = SectionField(Header)
         config = SectionField(Config)
         schedule = SectionField(Schedule)
 
-    doc = Doc.read(GOLDEN)
+    doc = Doc.document_read(GOLDEN)
     assert doc.header.created == date(2024, 1, 1)
     assert doc.header.revision == 3
     assert doc.config.enabled is True
     assert doc.config.mode == "NORMAL"
     assert (doc.schedule.start, doc.schedule.stop) == (time(8, 0), time(17, 30))
     # reading through converters changes nothing on disk
-    assert doc.dumps(indent=12, newline="\r\n").encode("ascii") == GOLDEN.read_bytes()
+    out = doc.document_dumps(indent=12, newline="\r\n")
+    assert out.encode("ascii") == GOLDEN.read_bytes()
 
 
 def test_enum_by_name_accepts_the_name_on_assignment():
@@ -251,7 +252,7 @@ def test_enum_by_name_accepts_the_name_on_assignment():
 
     class S(Section):
         section_name = "S"
-        mode = Field("MODE", enum_by_name(Mode))
+        mode = Field(enum_by_name(Mode))
 
     s = S()
     s.mode = "FAST"  # the name itself, symmetric with enum_by_value

@@ -6,6 +6,7 @@ import kvsections
 from helpers import (
     GOLDEN,
     CommentDocument,
+    names,
 )
 from kvsections import (
     Document,
@@ -17,7 +18,7 @@ from kvsections import (
 
 
 def test_wrap_records_reproduces_the_sample_from_unwrapped_input():
-    unwrapped = CommentDocument.read(GOLDEN).dumps(
+    unwrapped = CommentDocument.document_read(GOLDEN).document_dumps(
         width=None, indent=12, newline="\r\n"
     )
     assert max(len(line) for line in unwrapped.split("\r\n")) > 80
@@ -50,10 +51,15 @@ def test_wrap_records_wraps_headers_continuations_and_text():
         "         word word word\n"
         "X " + "A" * 100 + "\r\n"
     )
-    before, after = CommentDocument.loads(text), CommentDocument.loads(out)
+    before, after = (
+        CommentDocument.document_loads(text),
+        CommentDocument.document_loads(out),
+    )
     assert after["HEADER"] == before["HEADER"] and after["X"] == before["X"]
     # wrapping free text turns spaces into line breaks, so compare words
-    assert after["COMMENT"].text.split() == before["COMMENT"].text.split()
+    assert (
+        after["COMMENT"].section_text.split() == before["COMMENT"].section_text.split()
+    )
 
 
 def test_wrap_records_terminates_pieces_of_an_unterminated_last_record():
@@ -77,8 +83,8 @@ def test_reorder_records_matches_document_reorder_without_altering_records():
     order = ["OUTPUT", "header", ..., "SOURCE", "COMMENTS"]
     moved = reorder_records(text, order)
     doc = kvsections.read(GOLDEN)
-    doc.reorder(order)
-    assert list(kvsections.loads(moved)) == list(doc)
+    doc.document_reorder(order)
+    assert names(kvsections.loads(moved)) == names(doc)
     assert kvsections.loads(moved) == doc
     assert sorted(moved.split("\r\n")) == sorted(text.split("\r\n"))
     assert reorder_records(text, [...]) == text
@@ -108,7 +114,7 @@ def test_reorder_records_keeps_preamble_duplicates_and_unparsed_bytes():
 
 def test_reorder_records_resolves_aliases_through_a_schema():
     class Doc(Document):
-        comments = SectionField(TextSection, "COMMENTS", aliases=("COMMENT",))
+        comments = SectionField(TextSection, aliases=("COMMENT",))
 
     text = "COMMENT text\r\nHEADER X=1\r\n"
     assert reorder_records(text, ["HEADER", ...], document_type=Doc) == (

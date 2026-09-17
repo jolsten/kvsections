@@ -77,7 +77,7 @@ def reorder_records(
 
     A block starts at each header record and runs to the next one; anything
     before the first header stays first. ``order`` has the same form as for
-    :meth:`Document.reorder`: names in the wanted order, ``...`` for every
+    :meth:`Document.document_reorder`: names in the wanted order, ``...`` for every
     section not named (kept in their current relative order), and names after
     ``...`` last. Pass a schema class as ``document_type`` to resolve its
     aliases; without one, names match by spelling alone. Every byte inside a
@@ -86,7 +86,9 @@ def reorder_records(
     longer last.
     """
     canonical = (
-        _normalize_key if document_type is None else document_type.canonical_name
+        _normalize_key
+        if document_type is None
+        else document_type.document_canonical_name
     )
     head, tail = plan_order(order, canonical)
     named = set(head) | set(tail)
