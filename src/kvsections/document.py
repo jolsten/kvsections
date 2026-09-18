@@ -5,7 +5,7 @@ from __future__ import annotations
 import codecs
 import io
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from typing import IO, Any, ClassVar, TypeVar, cast
+from typing import IO, Any, ClassVar, TypeVar, cast, overload
 
 from .errors import ParseWarning
 from .fields import Declaration, Field, check_declaration, name_from_attr
@@ -15,6 +15,7 @@ from .records import plan_order
 from .writer import format_document
 
 _D = TypeVar("_D", bound="Document")
+_T = TypeVar("_T")
 
 __all__ = ["Document", "SectionField"]
 
@@ -390,6 +391,39 @@ class Document:
             isinstance(name, str)
             and self.document_canonical_name(name) in self.document_sections
         )
+
+    @overload
+    def document_get(self, name: str) -> BaseSection | None: ...
+
+    @overload
+    def document_get(self, name: str, *, default: _T) -> BaseSection | _T: ...
+
+    @overload
+    def document_get(self, name: str, key: str) -> str | None: ...
+
+    @overload
+    def document_get(self, name: str, key: str, *, default: _T) -> str | _T: ...
+
+    def document_get(
+        self, name: str, key: str | None = None, *, default: Any = None
+    ) -> Any:
+        """The section called ``name``, or with ``key`` the raw value it holds.
+
+        The lenient counterpart of ``doc[name][key]``: aliases resolve and
+        lookups are case-insensitive as for the subscript, but nothing
+        raises. Without ``key`` the result is the section or ``default``.
+        With ``key`` it is the stored string, or ``default`` when the section
+        is absent, holds free text rather than pairs, or lacks the key. A
+        name or key that is not a string counts as absent.
+        """
+        if not isinstance(name, str):
+            return default
+        section = self.document_sections.get(self.document_canonical_name(name))
+        if key is None:
+            return default if section is None else section
+        if not isinstance(section, Section):
+            return default
+        return section.section_get(key, default=default)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Document):

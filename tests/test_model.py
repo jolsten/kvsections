@@ -20,7 +20,6 @@ from kvsections.converters import (
     YYMMDD,
     zero_padded,
 )
-from kvsections.fields import MISSING
 
 
 def test_section_normalizes_keys_and_values():
@@ -126,18 +125,60 @@ def test_repr():
     assert repr(Document([Section("A")])) == "Document([Section('A', {})])"
 
 
-def test_field_default_missing_and_deletion():
+# --------------------------------------------------------------------------
+# missing keys: None by default, a default if given, an error if required
+# --------------------------------------------------------------------------
+
+
+def test_missing_keys_read_as_none_unless_defaulted_or_required():
     header = HeaderSection()
-    assert header.owner == "NOBODY"
-    with pytest.raises(AttributeError, match="VERSION"):
-        _ = header.version
+    assert header.author is None  # absent, no default
+    assert hasattr(header, "author")
+    assert header.owner == "NOBODY"  # absent, default
+    with pytest.raises(AttributeError, match=r"HeaderSection\.version \(VERSION\)"):
+        _ = header.version  # absent, required
     assert not hasattr(header, "version")
     header.version = 1
-    header.version = None
+    assert header.version == 1
+    header.version = None  # None removes, so the key is absent again
     assert "VERSION" not in header
+    with pytest.raises(AttributeError):
+        _ = header.version
+    header.author = "X"
+    header.author = None
+    assert header.author is None and "AUTHOR" not in header
     header.owner = "SOMEBODY"
     del header.owner
     assert header.owner == "NOBODY"
+
+
+def test_deleting_a_typed_field_matches_assigning_none():
+    header = HeaderSection()
+    del header.version  # absent already: a no-op, like header.version = None
+    assert "VERSION" not in header
+    header.version = 1
+    del header.version
+    assert "VERSION" not in header
+
+
+def test_required_fields_cannot_have_a_default():
+    with pytest.raises(TypeError, match="required field cannot have a default"):
+        Field(int, required=True, default=0)
+    assert Field(int, required=True, default=None).required  # None is no default
+
+
+def test_required_list_field_and_empty_versus_absent():
+    class S(Section):
+        section_name = "S"
+        xs = Field(list[int], required=True)
+        ys = Field(list[int])
+
+    with pytest.raises(AttributeError, match="XS"):
+        _ = S().xs
+    assert S(XS="").xs == []  # present but empty
+    assert S(XS="1,2").xs == [1, 2]
+    assert S().ys is None  # absent
+    assert S(YS="").ys == []
 
 
 def test_scalar_field_keeps_commas():
@@ -155,8 +196,7 @@ def test_list_field_splits_and_joins():
     assert schedule.days == ["A", "B"]
     schedule.days = ("X", "Y")
     assert schedule["DAYS"] == "X,Y"
-    with pytest.raises(AttributeError):
-        _ = schedule.counts
+    assert schedule.counts is None
     with pytest.raises(TypeError):
         schedule.days = "A,B"
     with pytest.raises(ValueError, match="comma"):
@@ -181,13 +221,16 @@ def test_list_field_type_forms_and_item_converters():
     assert items.padded == [7, 42]
 
 
-def test_list_field_default_none_is_returned_as_is():
+def test_list_field_default_is_copied_on_every_read():
     class S(Section):
         section_name = "S"
         xs = Field(list[int], default=None)
         ys = Field(list[int], default=(1,))
 
     assert S().xs is None
+    assert S().ys == [1]
+    first = S().ys
+    first.append(2)
     assert S().ys == [1]
 
 
@@ -234,22 +277,10 @@ def test_model_type_errors_and_unrelated_comparisons():
         del Section("A", K="1")[1]
 
 
-def test_field_and_missing_reprs():
+def test_field_reprs_and_class_access():
     assert repr(Field(int, key="key")) == "Field('KEY')"
     assert repr(HeaderSection.version) == "Field('VERSION')"
-    assert repr(MISSING) == "<missing>"
     assert isinstance(HeaderSection.version, Field)  # class access gives the descriptor
-
-
-def test_deleting_a_missing_typed_field_is_an_attribute_error():
-    header = HeaderSection()
-    with pytest.raises(AttributeError, match=r"HeaderSection\.version \(VERSION\)"):
-        del header.version
-    with pytest.raises(AttributeError, match=r"HeaderSection\.version"):
-        _ = header.version
-    header.version = 1
-    del header.version
-    assert "VERSION" not in header
 
 
 def test_bool_shorthand_is_rejected_with_a_hint():
@@ -268,6 +299,16 @@ def test_field_key_is_keyword_only_and_a_non_empty_str():
         Field(key=5)
     with pytest.raises(ValueError, match="empty"):
         Field(key="")
+
+
+def test_section_get_is_the_lenient_raw_lookup():
+    section = Section("A", X="1", EMPTY="")
+    assert section.section_get("x") == "1"
+    assert section.section_get("EMPTY") == ""
+    assert section.section_get("MISSING") is None
+    assert section.section_get("MISSING", default="d") == "d"
+    assert section.section_get(1) is None
+    assert HeaderSection(version=3).section_get("VERSION") == "3"  # raw, not typed
 
 
 # --------------------------------------------------------------------------

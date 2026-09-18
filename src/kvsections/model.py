@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, overload
 
 from .fields import Declaration, Field
 
 __all__ = ["BaseSection", "Section", "TextSection", "convert_section"]
 
 _S = TypeVar("_S", bound="BaseSection")
+_T = TypeVar("_T")
 
 
 def _normalize_key(key: Any) -> str:
@@ -141,6 +142,24 @@ class Section(BaseSection):
 
     def __contains__(self, key: object) -> bool:
         return isinstance(key, str) and _normalize_key(key) in self.section_fields
+
+    @overload
+    def section_get(self, key: str) -> str | None: ...
+
+    @overload
+    def section_get(self, key: str, *, default: _T) -> str | _T: ...
+
+    def section_get(self, key: str, *, default: Any = None) -> Any:
+        """The raw value stored under ``key``, or ``default`` when there is none.
+
+        The lenient counterpart of the subscript: lookups are case-insensitive
+        as everywhere, and a key that is not a string counts as absent rather
+        than raising. The value is the stored string; typed values are the
+        job of declared fields.
+        """
+        if not isinstance(key, str):
+            return default
+        return self.section_fields.get(_normalize_key(key), default)
 
     # -- misc --------------------------------------------------------------
 

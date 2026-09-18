@@ -50,6 +50,7 @@ doc["SOURCE"]["SIZE"]  # '001024' (leading zeros are kept)
 doc["OPTIONS"]["FLAGS"]  # 'A,B,C,D' (lists stay strings here)
 [name for name, section in doc]  # ['HEADER', 'CONFIG', 'SOURCE', ...]
 dict(doc["OUTPUT"])  # {'TYPE': 'REPORT', 'FORMAT': 'TABLE'}
+doc.document_get("CONFIG", "TIMEOUT")  # '30', or None if either is missing
 doc["COMMENTS"].section_text  # 'This is a freeform comment section.'
 
 doc["CONFIG"]["BUFFER"] = "8192"
@@ -62,10 +63,14 @@ kvsections.write(doc, "out.txt")
 section, `COMMENTS` included, as key/value pairs; free text is something a
 schema declares. `Document` and `Section` support `[]`, `in`, `len` and
 `del`, and iterate as `(name, section)` and `(key, value)` pairs, so
-`dict(section)` and `for key, value in section` work. They are deliberately
-not mappings: on a section every attribute that does not start with
-`section_` is a key, and on a document every attribute that does not start
-with `document_` is a section (see [Typed documents](#typed-documents)).
+`dict(section)` and `for key, value in section` work. The subscript is
+strict at both levels; `doc.document_get("HEADER", "VERSION")` and
+`section.section_get("VERSION")` are the lenient lookups, returning `None`
+or a keyword `default` when the section, the key or both are missing. They
+are deliberately not mappings: on a section every attribute that does not
+start with `section_` is a key, and on a document every attribute that does
+not start with `document_` is a section (see
+[Typed documents](#typed-documents)).
 Keys and section names are normalised to upper case on the way in, and
 lookups are case-insensitive. Values are always strings, commas included;
 splitting them into lists is the job of typed fields (below).
@@ -162,7 +167,7 @@ from kvsections.converters import HHMMSS, YYYYMMDD, zero_padded
 
 class HeaderSection(Section):
     section_name = "HEADER"
-    version = Field(int)
+    version = Field(int, required=True)  # a key the file must carry
     created = Field(YYYYMMDD)  # datetime.date
     revision = Field(zero_padded(3))  # keeps the leading zeros
     author = Field()
@@ -221,13 +226,19 @@ new.document_write("new.txt")
 - `Field(type)` is shorthand for `parse=type, format=str`. Pass `parse` and
   `format` explicitly when the text form matters, or pass a `Converter`,
   which bundles both and can also be used inside `list[...]`.
-- Reading a missing key raises `AttributeError` unless `default` is given,
-  and so does reading a declared section the document lacks. Assigning
-  `None` removes the key or the section.
+- A key the section lacks reads as `None`, or as `default` when one is
+  given, and assigning `None` removes a key, so an absent key round-trips
+  as `None`. `Field(int, required=True)` raises `AttributeError` instead,
+  for a key the file must carry; a required field cannot have a default.
+  Under mypy a plain field reads as `int | None` and a required or
+  defaulted one as `int`. Reading a declared section the document lacks
+  always raises, because a section is something you write into; assigning
+  `None` removes it.
 - `Field(list[T])` splits the value on commas, converts each item with `T`,
   and joins on assignment; `parse` and `format` then apply per item. An
-  empty value is an empty list. The list is a copy, so assign a new list
-  rather than appending to the old one.
+  empty value is an empty list and an absent key is `None`, like any other
+  field. The list is a copy, so assign a new list rather than appending to
+  the old one.
 - Declaring a `SectionField` registers its class for that name, so the
   reader instantiates it and a generic `Section` added under that name is
   converted. Registrations are inherited by subclasses, including through

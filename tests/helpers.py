@@ -77,7 +77,7 @@ GOLDEN_DOCUMENT = CommentDocument(
 
 class HeaderSection(Section):
     section_name = "HEADER"
-    version = Field(int)
+    version = Field(int, required=True)
     revision = Field(int, format="{:03d}".format)
     author = Field()
     owner = Field(default="NOBODY")

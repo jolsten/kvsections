@@ -452,3 +452,20 @@ def test_module_level_functions_are_the_generic_document_methods():
     assert type(kvsections.loads("A X=1")) is Document
     doc = Document([Section("A", X="1")])
     assert kvsections.dumps(doc, width=None) == doc.document_dumps(width=None)
+
+
+def test_document_get_reaches_sections_and_keys_leniently():
+    doc = SampleDocument.document_loads("HEADER VERSION=1\nCOMMENT text\n")
+    assert doc.document_get("header") is doc.header
+    assert doc.document_get("COMMENT") is doc.comments  # aliases resolve
+    assert doc.document_get("MISSING") is None
+    assert doc.document_get("MISSING", default="d") == "d"
+    assert doc.document_get("header", "version") == "1"  # the raw string
+    assert doc.document_get("HEADER", "MISSING") is None
+    assert doc.document_get("MISSING", "VERSION", default="d") == "d"
+    assert doc.document_get("comments", "X") is None  # free text has no keys
+    assert doc.document_get(1) is None
+    assert doc.document_get("HEADER", 1) is None
+    assert doc["HEADER"]["VERSION"] == "1"  # the subscript stays strict
+    with pytest.raises(KeyError):
+        _ = doc["HEADER"]["MISSING"]

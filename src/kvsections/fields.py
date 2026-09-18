@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import (
     TYPE_CHECKING,
     Any,
     Generic,
+    Literal,
     TypeVar,
     get_args,
     get_origin,
@@ -16,18 +17,9 @@ from typing import (
 if TYPE_CHECKING:
     from .model import Section
 
-__all__ = ["MISSING", "Converter", "Field"]
+__all__ = ["Converter", "Field"]
 
 T = TypeVar("T")
-
-
-class _Missing:
-    def __repr__(self) -> str:
-        return "<missing>"
-
-
-#: Sentinel meaning "no default was given".
-MISSING: Any = _Missing()
 
 
 class Converter(Generic[T]):
@@ -140,8 +132,12 @@ class Field(Declaration, Generic[T]):
     item, an empty value is an empty list, and the list returned is a copy,
     so assign a new list rather than mutating it.
 
-    Reading a missing key raises :class:`AttributeError` unless ``default`` is
-    given. Assigning ``None`` removes the key.
+    A key the section lacks reads as ``default``, which is ``None`` unless
+    given, so an absent key reads back as the ``None`` that removes it on
+    assignment. ``required=True`` makes such a read raise
+    :class:`AttributeError` instead, for keys a file must carry; a required
+    field cannot have a default. Assigning ``None`` removes the key, and so
+    does ``del``, silently when the key is already absent.
 
     A field may only be declared on a :class:`Section` subclass, under an
     attribute that does not start with ``section_`` and that no base class
@@ -152,6 +148,20 @@ class Field(Declaration, Generic[T]):
     key: str
     attr: str
 
+    # -- no type: the raw string -------------------------------------------
+
+    @overload
+    def __init__(
+        self: Field[str | None],
+        type: None = None,
+        *,
+        key: str | None = None,
+        parse: None = None,
+        format: Callable[[Any], str] | None = None,
+        default: None = None,
+        required: Literal[False] = False,
+    ) -> None: ...
+
     @overload
     def __init__(
         self: Field[str],
@@ -160,7 +170,32 @@ class Field(Declaration, Generic[T]):
         key: str | None = None,
         parse: None = None,
         format: Callable[[Any], str] | None = None,
-        default: Any = ...,
+        required: Literal[True],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: Field[str],
+        type: None = None,
+        *,
+        key: str | None = None,
+        parse: None = None,
+        format: Callable[[Any], str] | None = None,
+        default: str,
+    ) -> None: ...
+
+    # -- list[T] -----------------------------------------------------------
+
+    @overload
+    def __init__(
+        self: Field[list[T] | None],
+        type: type[list[T]],
+        *,
+        key: str | None = None,
+        parse: Callable[[str], T] | None = None,
+        format: Callable[[T], str] | None = None,
+        default: None = None,
+        required: Literal[False] = False,
     ) -> None: ...
 
     @overload
@@ -171,7 +206,32 @@ class Field(Declaration, Generic[T]):
         key: str | None = None,
         parse: Callable[[str], T] | None = None,
         format: Callable[[T], str] | None = None,
-        default: Any = ...,
+        required: Literal[True],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: Field[list[T]],
+        type: type[list[T]],
+        *,
+        key: str | None = None,
+        parse: Callable[[str], T] | None = None,
+        format: Callable[[T], str] | None = None,
+        default: Iterable[T],
+    ) -> None: ...
+
+    # -- a type, converter or parse callable -------------------------------
+
+    @overload
+    def __init__(
+        self: Field[T | None],
+        type: Converter[T] | Callable[[str], T],
+        *,
+        key: str | None = None,
+        parse: Callable[[str], T] | None = None,
+        format: Callable[[T], str] | None = None,
+        default: None = None,
+        required: Literal[False] = False,
     ) -> None: ...
 
     @overload
@@ -182,7 +242,32 @@ class Field(Declaration, Generic[T]):
         key: str | None = None,
         parse: Callable[[str], T] | None = None,
         format: Callable[[T], str] | None = None,
-        default: Any = ...,
+        required: Literal[True],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: Field[T],
+        type: Converter[T] | Callable[[str], T],
+        *,
+        key: str | None = None,
+        parse: Callable[[str], T] | None = None,
+        format: Callable[[T], str] | None = None,
+        default: T,
+    ) -> None: ...
+
+    # -- parse= on its own -------------------------------------------------
+
+    @overload
+    def __init__(
+        self: Field[T | None],
+        type: None = None,
+        *,
+        key: str | None = None,
+        parse: Callable[[str], T],
+        format: Callable[[T], str] | None = None,
+        default: None = None,
+        required: Literal[False] = False,
     ) -> None: ...
 
     @overload
@@ -193,7 +278,18 @@ class Field(Declaration, Generic[T]):
         key: str | None = None,
         parse: Callable[[str], T],
         format: Callable[[T], str] | None = None,
-        default: Any = ...,
+        required: Literal[True],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: Field[T],
+        type: None = None,
+        *,
+        key: str | None = None,
+        parse: Callable[[str], T],
+        format: Callable[[T], str] | None = None,
+        default: T,
     ) -> None: ...
 
     def __init__(
@@ -203,7 +299,8 @@ class Field(Declaration, Generic[T]):
         key: str | None = None,
         parse: Any = None,
         format: Any = None,
-        default: Any = MISSING,
+        default: Any = None,
+        required: bool = False,
     ) -> None:
         if isinstance(type, str):
             raise TypeError(
@@ -216,6 +313,8 @@ class Field(Declaration, Generic[T]):
             if not key:
                 raise ValueError("key must not be empty")
             key = key.upper()
+        if required and default is not None:
+            raise TypeError("a required field cannot have a default")
         # An empty key means "take it from the attribute" in __set_name__.
         self.key = key or ""
         self.attr = self.key
@@ -230,6 +329,7 @@ class Field(Declaration, Generic[T]):
         self.parse = parse
         self.format = format
         self.default = default
+        self.required = required
 
     def __set_name__(self, owner: type, attr: str) -> None:
         super().__set_name__(owner, attr)
@@ -259,7 +359,7 @@ class Field(Declaration, Generic[T]):
             return self
         raw = section.section_fields.get(self.key)
         if raw is None:
-            if self.default is MISSING:
+            if self.required:
                 raise AttributeError(f"{self._describe(section)} is not set")
             if self.is_list and self.default is not None:
                 return list(self.default)
@@ -286,9 +386,7 @@ class Field(Declaration, Generic[T]):
             section[self.key] = self.format(value) if self.format is not None else value
 
     def __delete__(self, section: Section) -> None:
-        if self.key not in section.section_fields:
-            raise AttributeError(f"{self._describe(section)} is not set")
-        del section[self.key]
+        section.section_fields.pop(self.key, None)
 
     def __repr__(self) -> str:
         return f"{builtins_type(self).__name__}({self.key!r})"

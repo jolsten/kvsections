@@ -24,18 +24,19 @@ uv run --group dev mypy
   (a `textwrap` wrapper), `plan_order`. Every other module builds on these so
   the rules exist once.
 - `model.py`: `BaseSection`, `Section` (subscriptable, iterates `(key, value)`
-  pairs, deliberately not a `Mapping`), `TextSection`, `convert_section`.
+  pairs, deliberately not a `Mapping`; `section_get` is the lenient lookup),
+  `TextSection`, `convert_section`.
   `Section.__init_subclass__` and `TextSection.__init_subclass__` validate
   the descriptors declared on subclasses.
 - `fields.py`: `Declaration` (the descriptor base that records its attribute
-  in `__set_name__`), `Field[T]`, `Converter[T]`, `MISSING`, `name_from_attr`
-  and `check_declaration` (the reserved-name rules, shared with `SectionField`).
+  in `__set_name__`), `Field[T]`, `Converter[T]`, `name_from_attr` and
+  `check_declaration` (the reserved-name rules, shared with `SectionField`).
 - `errors.py`: `ParseWarning`, `ParseError`.
 - `reader.py`: tolerant parser. `writer.py`: strict renderer.
 - `document.py`: `Document` (subscriptable, iterates `(name, section)` pairs,
-  not a `Mapping`), `SectionField`, schema registry and alias merging,
-  `document_reorder`, the I/O methods; every library name on it starts with
-  `document_`.
+  not a `Mapping`; `document_get(name, key=None)` is the lenient lookup),
+  `SectionField`, schema registry and alias merging, `document_reorder`, the
+  I/O methods; every library name on it starts with `document_`.
 - `layout.py`: `wrap_records` and `reorder_records`, text-level and
   byte-preserving. `converters.py`: ready-made parse/format pairs.
 - `__init__.py`: `loads`/`load`/`read`/`dumps`/`dump`/`write` are bound
@@ -76,11 +77,19 @@ Do not reverse these without asking.
    override inherited ones (`_merge_schema`).
 10. Typed fields are lazy views over the raw strings: parse on read, format
     on assignment, nothing validated at load time. Converters validate both
-    directions; `%y` follows Python's 1969 pivot.
-11. Reading a declared section the document lacks raises `AttributeError`,
-    exactly like a missing typed key. Reading never mutates. Create with
-    `doc.header = {}` or `doc.document_add(...)`. Field defaults exist
-    (`Field(default=...)`); section defaults do not, on purpose.
+    directions; `%y` follows Python's 1969 pivot. The overloads make the
+    typing honest: `Field(int)` reads as `int | None`, `required=True` or a
+    non-None `default` as `int`.
+11. A typed key the section lacks reads as `None`, or as the field's
+    `default`, mirroring decision 3 so that an absent key round-trips as
+    `None`. `Field(..., required=True)` raises `AttributeError` instead and
+    cannot have a default; the reader stays tolerant, required-ness is the
+    schema author's call. `del section.field` on an absent key is a no-op,
+    like assigning `None`. Reading a declared section the document lacks
+    always raises `AttributeError`, because `None` would turn
+    `doc.header.x = 1` into an obscure `NoneType` error. Reading never
+    mutates. Create with `doc.header = {}` or `doc.document_add(...)`;
+    section defaults do not exist, on purpose.
 12. Section order is not part of the format; `document_reorder` and
     `document_order` are opt-in and the writer never reorders.
 13. Python 3.9 minimum, zero runtime dependencies, no pydantic/attrs, stdlib
@@ -118,6 +127,12 @@ Do not reverse these without asking.
 17. Constructor parameters `name`, `fields`, `text` and `sections` are
     positional-only, so every keyword argument to a section is a key
     (`HeaderSection(name="X")` stores NAME).
+18. Lenient raw lookups are explicit: `section.section_get(key, *, default=None)`
+    and `doc.document_get(name, key=None, *, default=None)`. With a key,
+    `document_get` returns the default when the section is absent, holds free
+    text, or lacks the key, so no `None` ever sits in the middle of a chain.
+    `default` is keyword-only. The subscript stays strict at both levels, and
+    nothing else from the old mapping interface comes back without a need.
 
 ## CI and releases
 
