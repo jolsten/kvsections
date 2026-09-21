@@ -31,7 +31,8 @@ uv run --group dev mypy
 - `fields.py`: `Declaration` (the descriptor base that records its attribute
   in `__set_name__`), `Field[T]`, `Converter[T]`, `name_from_attr` and
   `check_declaration` (the reserved-name rules, shared with `SectionField`).
-- `errors.py`: `ParseWarning`, `ParseError`.
+- `errors.py`: `Problem` (the enum of tolerated problems), `ParseWarning`,
+  `ParseError`.
 - `reader.py`: tolerant parser. `writer.py`: strict renderer.
 - `document.py`: `Document` (subscriptable, iterates `(name, section)` pairs,
   not a `Mapping`; `document_get(name, key=None)` is the lenient lookup),
@@ -61,6 +62,13 @@ Do not reverse these without asking.
    `doc.document_warnings` with a line number, `strict=True` raises at the
    first. Duplicate sections merge, duplicate keys keep the last value, bare
    tokens get an empty value, undecodable bytes and BOMs are reported.
+   Warnings are structured: `ParseWarning(lineno, kind, subject, message)`
+   with `kind` a `Problem` member and `subject` the section name (canonical),
+   key or token concerned, and `ParseError` carries the same fields. Filter
+   on `kind`, never by matching the message. Repeated headers are counted
+   from `DUPLICATE_SECTION` warnings (one per merge, so appearances minus
+   one, aliases folded); there is deliberately no separate duplicates
+   record, so the warnings stay the single record of tolerance.
 6. The writer is strict about content (character set, upper case, section
    kind) but record width is a convention: over-long pairs or words go on a
    record of their own and are never refused.
@@ -127,12 +135,17 @@ Do not reverse these without asking.
 17. Constructor parameters `name`, `fields`, `text` and `sections` are
     positional-only, so every keyword argument to a section is a key
     (`HeaderSection(name="X")` stores NAME).
-18. Lenient raw lookups are explicit: `section.section_get(key, *, default=None)`
-    and `doc.document_get(name, key=None, *, default=None)`. With a key,
-    `document_get` returns the default when the section is absent, holds free
-    text, or lacks the key, so no `None` ever sits in the middle of a chain.
-    `default` is keyword-only. The subscript stays strict at both levels, and
-    nothing else from the old mapping interface comes back without a need.
+18. Lenient raw lookups are explicit: `section.section_get(key, *, default=None)`,
+    `doc.document_get(name, key=None, *, default=None)` and the presence test
+    `doc.document_has(name, key=None)`. With a key, `document_get` returns
+    the default when the section is absent, holds free text, or lacks the
+    key, so no `None` ever sits in the middle of a chain; `document_has` is
+    false in the same cases and true for an empty value. `default` is
+    keyword-only. All of them are raw: no converter runs and no field default
+    applies, those belong to typed attributes. There is no `section_has`,
+    since `key in section` already is that test. The subscript stays strict
+    at both levels, and nothing else from the old mapping interface comes
+    back without a need.
 
 ## CI and releases
 

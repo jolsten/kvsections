@@ -414,7 +414,9 @@ class Document:
         raises. Without ``key`` the result is the section or ``default``.
         With ``key`` it is the stored string, or ``default`` when the section
         is absent, holds free text rather than pairs, or lacks the key. A
-        name or key that is not a string counts as absent.
+        name or key that is not a string counts as absent. Only ``default``
+        applies: no converter runs and no field default does, those belong
+        to the typed attributes.
         """
         if not isinstance(name, str):
             return default
@@ -424,6 +426,22 @@ class Document:
         if not isinstance(section, Section):
             return default
         return section.section_get(key, default=default)
+
+    def document_has(self, name: str, key: str | None = None) -> bool:
+        """Whether a section called ``name`` exists, and with ``key`` holds that key.
+
+        The two-level counterpart of ``in``: aliases resolve and lookups are
+        case-insensitive, an empty value counts as present, and a name or key
+        that is not a string, or a section that holds free text, gives
+        ``False`` rather than raising. Like the ``get`` family it looks at
+        the stored pairs only, so a field default does not count as present.
+        """
+        if not isinstance(name, str):
+            return False
+        section = self.document_sections.get(self.document_canonical_name(name))
+        if key is None:
+            return section is not None
+        return isinstance(section, Section) and key in section
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Document):

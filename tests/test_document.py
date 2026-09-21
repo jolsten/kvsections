@@ -469,3 +469,21 @@ def test_document_get_reaches_sections_and_keys_leniently():
     assert doc["HEADER"]["VERSION"] == "1"  # the subscript stays strict
     with pytest.raises(KeyError):
         _ = doc["HEADER"]["MISSING"]
+
+
+def test_document_has_is_the_two_level_presence_test():
+    doc = SampleDocument.document_loads("HEADER VERSION=1 EMPTY=\nCOMMENT text\n")
+    assert doc.document_has("header")
+    assert doc.document_has("COMMENT")  # aliases resolve
+    assert not doc.document_has("MISSING")
+    assert doc.document_has("header", "version")
+    assert doc.document_has("HEADER", "EMPTY")  # present but empty counts
+    assert not doc.document_has("HEADER", "MISSING")
+    assert not doc.document_has("MISSING", "VERSION")
+    assert not doc.document_has("comments", "X")  # free text has no keys
+    assert not doc.document_has(1)
+    assert not doc.document_has("HEADER", 1)
+    # the raw family ignores field defaults: OWNER defaults to NOBODY
+    assert doc.header.owner == "NOBODY"
+    assert not doc.document_has("HEADER", "OWNER")
+    assert doc.document_get("HEADER", "OWNER") is None

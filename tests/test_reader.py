@@ -1,6 +1,7 @@
 """The tolerant reader: warnings, strict mode, encodings and text sections."""
 
 import io
+from collections import Counter
 
 import pytest
 
@@ -8,11 +9,13 @@ import kvsections
 from helpers import (
     GOLDEN,
     CommentDocument,
+    SampleDocument,
     names,
 )
 from kvsections import (
     Document,
     ParseError,
+    Problem,
     Section,
     SectionField,
     TextSection,
@@ -82,6 +85,10 @@ def test_tolerates_duplicate_section_by_merging():
         "line 3: duplicate section A; merged into the earlier one",
         "line 3: duplicate key X in section A; last value wins",
     ]
+    assert [(w.kind, w.subject) for w in doc.document_warnings] == [
+        (Problem.DUPLICATE_SECTION, "A"),
+        (Problem.DUPLICATE_KEY, "X"),
+    ]
 
 
 def test_tolerates_missing_equals_and_missing_key():
@@ -106,6 +113,9 @@ def test_strict_raises_parse_error():
         kvsections.loads("A x=1", strict=True)
     assert info.value.lineno == 1
     assert "not upper-case" in str(info.value)
+    assert info.value.kind is Problem.LOWERCASE_KEY
+    assert info.value.subject == "X"
+    assert info.value.message == "key 'x' is not upper-case; normalized"
 
 
 def test_load_from_text_and_binary_files():
@@ -246,3 +256,45 @@ def test_free_text_sections_are_schema_registrations():
     assert doc["NOTES"] == TextSection("NOTES", "some text here")
     assert Document.document_section_type("comment") is Section
     assert Doc.document_section_type("comment") is Section
+
+
+def test_every_warning_carries_a_kind_and_a_subject():
+    text = (
+        "\ufeff  orphan=1\n"  # 1: BOM, then content before any header
+        "header owner=nobody =1 FLAG X=1 x=2\n"  # 2: case, key forms, duplicate key
+        "Z=3\n"  # 3: pairs in column 1 with no name
+        "COMMENT caf\u00e9\n"  # 4: unwritable free text
+        "HEADER Y=1\n"  # 5: repeated header
+        "N\x01 K=caf\u00e9\n"  # 6: unwritable section name and value
+    )
+    doc = CommentDocument.document_loads(text)
+    assert [(w.lineno, w.kind, w.subject) for w in doc.document_warnings] == [
+        (1, Problem.BOM, None),
+        (1, Problem.ORPHAN_CONTENT, None),
+        (2, Problem.LOWERCASE_SECTION, "HEADER"),
+        (2, Problem.LOWERCASE_KEY, "OWNER"),
+        (2, Problem.MISSING_KEY, "=1"),
+        (2, Problem.BARE_TOKEN, "FLAG"),
+        (2, Problem.LOWERCASE_KEY, "X"),
+        (2, Problem.DUPLICATE_KEY, "X"),
+        (3, Problem.UNNAMED_HEADER, None),
+        (4, Problem.UNWRITABLE, None),
+        (5, Problem.DUPLICATE_SECTION, "HEADER"),
+        (6, Problem.UNWRITABLE, "N\x01"),
+        (6, Problem.UNWRITABLE, "K"),
+    ]
+    assert {w.kind for w in doc.document_warnings} == set(Problem)
+    assert all(str(w).startswith(f"line {w.lineno}: ") for w in doc.document_warnings)
+
+
+def test_repeated_headers_are_counted_from_the_warnings():
+    text = "SELECTOR N=1\nSELECTOR N=2\nSELECTOR N=3\nCOMMENTS a\nCOMMENT b\n"
+    doc = SampleDocument.document_loads(text)
+    repeats = Counter(
+        w.subject for w in doc.document_warnings if w.kind is Problem.DUPLICATE_SECTION
+    )
+    # one warning per merge, so appearances minus one; aliases fold together
+    assert repeats == {"SELECTOR": 2, "COMMENTS": 1}
+    assert doc["SELECTOR"]["N"] == "3"  # tolerance is unchanged: last value wins
+    clean = kvsections.loads("A X=1\nB Y=2\n")
+    assert not any(w.kind is Problem.DUPLICATE_SECTION for w in clean.document_warnings)

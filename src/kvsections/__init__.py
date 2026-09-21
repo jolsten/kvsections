@@ -34,7 +34,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 
 from .document import Document, SectionField
-from .errors import ParseError, ParseWarning
+from .errors import ParseError, ParseWarning, Problem
 from .fields import Converter, Field
 from .layout import reorder_records, wrap_records
 from .model import BaseSection, Section, TextSection
@@ -51,6 +51,7 @@ __all__ = [
     "Field",
     "ParseError",
     "ParseWarning",
+    "Problem",
     "Section",
     "SectionField",
     "TextSection",

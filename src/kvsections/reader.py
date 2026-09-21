@@ -2,7 +2,9 @@
 
 The reader never gives up on malformed input. Anything it has to guess about
 is recorded as a :class:`ParseWarning` on the resulting document, or raised as
-a :class:`ParseError` when ``strict`` is requested.
+a :class:`ParseError` when ``strict`` is requested. Every warning carries a
+:class:`Problem` kind and the subject it concerns, so callers filter on those
+rather than on the message.
 
 Layout is inferred rather than assumed: a line whose first character is not
 whitespace starts a new section named by its first token, and every indented
@@ -14,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeVar
 
-from .errors import ParseError, ParseWarning
+from .errors import ParseError, ParseWarning, Problem
 from .model import BaseSection, Section, TextSection
 from .records import BLANK, CONTINUATION, TEXT_CHARS, TOKEN_CHARS, split_records
 
@@ -31,18 +33,27 @@ class _Reporter:
         self.doc = doc
         self.strict = strict
 
-    def warn(self, lineno: int, message: str) -> None:
+    def warn(
+        self, lineno: int, kind: Problem, subject: str | None, message: str
+    ) -> None:
         if self.strict:
-            raise ParseError(lineno, message)
-        self.doc.document_warnings.append(ParseWarning(lineno, message))
+            raise ParseError(lineno, kind, subject, message)
+        self.doc.document_warnings.append(ParseWarning(lineno, kind, subject, message))
 
     def check_chars(
-        self, lineno: int, text: str, allowed: frozenset[str], what: str
+        self,
+        lineno: int,
+        text: str,
+        allowed: frozenset[str],
+        what: str,
+        subject: str | None = None,
     ) -> None:
         """Warn when ``text`` holds characters the writer would refuse."""
         if not set(text) <= allowed:
             self.warn(
                 lineno,
+                Problem.UNWRITABLE,
+                subject,
                 f"{what} {text!r} contains characters that cannot be written back",
             )
 
@@ -52,18 +63,32 @@ def parse_pairs(section: Section, content: str, lineno: int, report: _Reporter) 
     for token in content.split():
         key, equals, value = token.partition("=")
         if not key:
-            report.warn(lineno, f"{token!r} has no key; ignored")
+            report.warn(
+                lineno, Problem.MISSING_KEY, token, f"{token!r} has no key; ignored"
+            )
             continue
         if not equals:
-            report.warn(lineno, f"{token!r} has no '='; stored with an empty value")
+            report.warn(
+                lineno,
+                Problem.BARE_TOKEN,
+                key.upper(),
+                f"{token!r} has no '='; stored with an empty value",
+            )
         if key != key.upper():
-            report.warn(lineno, f"key {key!r} is not upper-case; normalized")
+            report.warn(
+                lineno,
+                Problem.LOWERCASE_KEY,
+                key.upper(),
+                f"key {key!r} is not upper-case; normalized",
+            )
             key = key.upper()
-        report.check_chars(lineno, key, TOKEN_CHARS, "key")
-        report.check_chars(lineno, value, TOKEN_CHARS, f"value of {key}")
+        report.check_chars(lineno, key, TOKEN_CHARS, "key", key)
+        report.check_chars(lineno, value, TOKEN_CHARS, f"value of {key}", key)
         if key in section.section_fields:
             report.warn(
                 lineno,
+                Problem.DUPLICATE_KEY,
+                key,
                 f"duplicate key {key} in section {section.section_name}; "
                 "last value wins",
             )
@@ -111,7 +136,7 @@ def parse(document_type: type[_D], text: str, *, strict: bool = False) -> _D:
     report = _Reporter(doc, strict)
 
     if text.startswith("\ufeff"):
-        report.warn(1, "UTF-8 byte order mark ignored")
+        report.warn(1, Problem.BOM, None, "UTF-8 byte order mark ignored")
         text = text[1:]
 
     current: BaseSection | None = None
@@ -119,7 +144,12 @@ def parse(document_type: type[_D], text: str, *, strict: bool = False) -> _D:
 
     def continuation(line: str, lineno: int) -> None:
         if current is None:
-            report.warn(lineno, "content before the first section header; ignored")
+            report.warn(
+                lineno,
+                Problem.ORPHAN_CONTENT,
+                None,
+                "content before the first section header; ignored",
+            )
         elif buffer is not None:
             report.check_chars(lineno, buffer.add(line), TEXT_CHARS, "text")
         else:
@@ -135,7 +165,10 @@ def parse(document_type: type[_D], text: str, *, strict: bool = False) -> _D:
         if record.kind == CONTINUATION:
             if not record.prefix:
                 report.warn(
-                    lineno, "line has no section name; treated as a continuation"
+                    lineno,
+                    Problem.UNNAMED_HEADER,
+                    None,
+                    "line has no section name; treated as a continuation",
                 )
             continuation(line, lineno)
             continue
@@ -147,15 +180,23 @@ def parse(document_type: type[_D], text: str, *, strict: bool = False) -> _D:
             buffer.flush()
             buffer = None
         if name != name.upper():
-            report.warn(lineno, f"section name {name!r} is not upper-case; normalized")
+            report.warn(
+                lineno,
+                Problem.LOWERCASE_SECTION,
+                name.upper(),
+                f"section name {name!r} is not upper-case; normalized",
+            )
             name = name.upper()
-        report.check_chars(lineno, name, TOKEN_CHARS, "section name")
+        report.check_chars(lineno, name, TOKEN_CHARS, "section name", name)
         canonical = document_type.document_canonical_name(name)
         existing = doc.document_sections.get(canonical)
         if existing is not None:
             what = name if name == canonical else f"{name} (alias of {canonical})"
             report.warn(
-                lineno, f"duplicate section {what}; merged into the earlier one"
+                lineno,
+                Problem.DUPLICATE_SECTION,
+                canonical,
+                f"duplicate section {what}; merged into the earlier one",
             )
             current = existing
         else:

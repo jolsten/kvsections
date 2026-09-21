@@ -154,8 +154,8 @@ class Section(BaseSection):
 
         The lenient counterpart of the subscript: lookups are case-insensitive
         as everywhere, and a key that is not a string counts as absent rather
-        than raising. The value is the stored string; typed values are the
-        job of declared fields.
+        than raising. The value is the stored string: no converter runs and no
+        field default applies, those belong to the typed attributes.
         """
         if not isinstance(key, str):
             return default

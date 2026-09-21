@@ -51,6 +51,7 @@ doc["OPTIONS"]["FLAGS"]  # 'A,B,C,D' (lists stay strings here)
 [name for name, section in doc]  # ['HEADER', 'CONFIG', 'SOURCE', ...]
 dict(doc["OUTPUT"])  # {'TYPE': 'REPORT', 'FORMAT': 'TABLE'}
 doc.document_get("CONFIG", "TIMEOUT")  # '30', or None if either is missing
+doc.document_has("CONFIG", "TIMEOUT")  # True
 doc["COMMENTS"].section_text  # 'This is a freeform comment section.'
 
 doc["CONFIG"]["BUFFER"] = "8192"
@@ -66,8 +67,10 @@ schema declares. `Document` and `Section` support `[]`, `in`, `len` and
 `dict(section)` and `for key, value in section` work. The subscript is
 strict at both levels; `doc.document_get("HEADER", "VERSION")` and
 `section.section_get("VERSION")` are the lenient lookups, returning `None`
-or a keyword `default` when the section, the key or both are missing. They
-are deliberately not mappings: on a section every attribute that does not
+or a keyword `default` when the section, the key or both are missing, and
+`doc.document_has("HEADER", "VERSION")` is the matching presence test. All
+three are raw: no converter runs and no field default applies, those belong
+to the typed attributes below. They are deliberately not mappings: on a section every attribute that does not
 start with `section_` is a key, and on a document every attribute that does
 not start with `document_` is a section (see
 [Typed documents](#typed-documents)).
@@ -80,7 +83,9 @@ class offers the same as `document_loads`, `document_read` and so on.
 ### Reading is tolerant
 
 The reader never rejects a file. Anything it had to guess about is listed in
-`doc.document_warnings` as `(lineno, message)` pairs:
+`doc.document_warnings`, each entry a `ParseWarning` with the line number, a
+`kind` from the `Problem` enum, the `subject` concerned (a section name, key
+or token, or `None`) and a message:
 
 ```python
 doc = kvsections.loads("header owner=nobody\nheader x=1")
@@ -93,12 +98,27 @@ for warning in doc.document_warnings:
 # line 2: key 'x' is not upper-case; normalized
 ```
 
+Filter on `kind` rather than on the message. A repeated section header, for
+example, is merged into the earlier section with a `DUPLICATE_SECTION`
+warning per merge, so the headers that appeared more than once are one
+expression away:
+
+```python
+from collections import Counter
+from kvsections import Problem
+
+repeats = Counter(
+    w.subject for w in doc.document_warnings if w.kind is Problem.DUPLICATE_SECTION
+)
+repeats  # Counter({'HEADER': 1}): one merge, so HEADER appeared twice
+```
+
 Line length, padding and line endings are not checked, and the layout is
 inferred rather than assumed, so any indent width reads correctly, and a
 UTF-8 byte order mark is dropped with a warning, as is any character that
 could not be written back, such as the replacement character an undecodable
 byte becomes. Pass `strict=True` to raise `ParseError` at the first problem
-instead.
+instead; it carries the same `kind`, `subject` and `lineno`.
 
 ### Writing is strict
 
