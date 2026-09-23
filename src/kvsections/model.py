@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar, cast, overload
 
 from .fields import Declaration, Field
 
@@ -31,7 +31,8 @@ def _normalize_value(value: Any) -> str:
     if isinstance(value, (bytes, bytearray)):
         raise TypeError("values must be str, not bytes")
     if isinstance(value, Iterable):
-        items = [item if isinstance(item, str) else str(item) for item in value]
+        iterable = cast("Iterable[object]", value)
+        items = [item if isinstance(item, str) else str(item) for item in iterable]
         for item in items:
             if "," in item:
                 raise ValueError(f"list item {item!r} contains a comma")
@@ -104,7 +105,11 @@ class Section(BaseSection):
         #: directly bypasses normalization.
         self.section_fields: dict[str, str] = {}
         if fields is not None:
-            pairs = fields.items() if isinstance(fields, Mapping) else fields
+            pairs: Iterable[tuple[str, Any]]
+            if isinstance(fields, Mapping):
+                pairs = cast("Iterable[tuple[str, Any]]", fields.items())
+            else:
+                pairs = fields
             for key, value in pairs:
                 self[key] = value
         for attr, value in kwargs.items():

@@ -7,14 +7,16 @@ name. `tests/samples/golden.txt` is the reference file. MIT licensed.
 
 ## Commands
 
-Run all four before calling a change done. Coverage fails below 95% and mypy
-runs in strict mode; ruff enforces LF line endings on Python files.
+Run all five before calling a change done. Coverage fails below 95%, mypy
+runs in strict mode and pyright must agree with it; ruff enforces LF line
+endings on Python files.
 
 ```
 uv run --group dev pytest --cov
 uv run --group dev ruff check
 uv run --group dev ruff format --check
 uv run --group dev mypy
+uv run --group dev pyright
 ```
 
 ## Layout
@@ -31,6 +33,8 @@ uv run --group dev mypy
 - `fields.py`: `Declaration` (the descriptor base that records its attribute
   in `__set_name__`), `Field[T]`, `Converter[T]`, `name_from_attr` and
   `check_declaration` (the reserved-name rules, shared with `SectionField`).
+  `Field` is typed through overloads on `__new__`, which also does the
+  initialisation; there is no `__init__` (see the conventions below).
 - `errors.py`: `Problem` (the enum of tolerated problems), `ParseWarning`,
   `ParseError`.
 - `reader.py`: tolerant parser. `writer.py`: strict renderer.
@@ -149,8 +153,8 @@ Do not reverse these without asking.
 
 ## CI and releases
 
-- `.github/workflows/ci.yml` runs the four commands above on every push and
-  pull request: lint and mypy on Ubuntu, pytest across Ubuntu, Windows and
+- `.github/workflows/ci.yml` runs the five commands above on every push and
+  pull request: lint, mypy and pyright on Ubuntu, pytest across Ubuntu, Windows and
   macOS on Python 3.9 to 3.13, plus a wheel build and import. It uses
   `uv sync --locked`, so commit `uv.lock` whenever `pyproject.toml` changes.
 - `.github/workflows/release.yml` publishes to PyPI on a `v*` tag through
@@ -173,6 +177,20 @@ Do not reverse these without asking.
 - Source files are LF. When writing files from a script on Windows, open
   them with `newline="\n"`; a plain text-mode write converts to CRLF
   silently, and this has bitten the project before.
+- The typing must satisfy mypy strict and pyright together, and CI checks
+  both. Two rules follow: never type a constructor through a
+  `self: Field[T]` annotation on `__init__` (pyright rejects a class type
+  variable there, `reportInvalidTypeVarUse`), and never give `Field` an
+  `__init__` alongside its `__new__` overloads (mypy then takes the
+  constructor signature from `__init__` and infers `Field[Any]`). Narrow
+  with `isinstance` on the same control-flow path as the use; pyright does
+  not carry narrowing through a boolean variable. Pyright narrows a declared
+  variable to the assigned type, so an annotation does not launder an
+  `Unknown` (from `{}`, `Any` narrowed by `isinstance`, or `__mro__`); use a
+  typed default constant or a `cast` to a type mypy does not consider
+  redundant, such as `Iterable[object]`. `[tool.pyright]` runs strict with
+  `reportUnnecessaryIsInstance` and `reportPrivateUsage` off, for the
+  reasons given there.
 - `dict(x)` calls `x.keys()` when the attribute exists, so a section or
   document declaring a field or section called `keys` converts with
   `dict(iter(x))`. This is CPython's rule and is documented in the README.

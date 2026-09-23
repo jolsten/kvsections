@@ -245,7 +245,11 @@ new.document_write("new.txt")
   its field and stores `NAME=X` as it is.
 - `Field(type)` is shorthand for `parse=type, format=str`. Pass `parse` and
   `format` explicitly when the text form matters, or pass a `Converter`,
-  which bundles both and can also be used inside `list[...]`.
+  which bundles both. mypy and pyright both infer the attribute's type from
+  the declaration. A list of converted items is
+  `Field(list[date], parse=YYYYMMDD.parse, format=YYYYMMDD.format)`;
+  `list[YYYYMMDD]` also works at runtime, but mypy rejects a value used as
+  a type and pyright cannot infer anything from it.
 - A key the section lacks reads as `None`, or as `default` when one is
   given, and assigning `None` removes a key, so an absent key round-trips
   as `None`. `Field(int, required=True)` raises `AttributeError` instead,
@@ -325,7 +329,9 @@ The date and time converters also refuse values that would not read back,
 such as a year outside 1969 to 2068 for `YYMMDD` or a time with
 microseconds for `HHMMSS`.
 
-A custom pair is one line: `Converter(parse, format)`.
+A custom pair is one line: `Converter(parse, format)`. Annotate the two
+callables and the converter's type follows, so `Field(MONEY)` on a
+`Converter[Decimal]` reads as `Decimal | None` under mypy and pyright alike.
 
 ## Development
 
@@ -335,6 +341,7 @@ uv run --group dev pytest --cov      # branch coverage; fails below 95%
 uv run --group dev ruff check
 uv run --group dev ruff format --check
 uv run --group dev mypy               # strict type checking
+uv run --group dev pyright            # the same annotations under pyright
 ```
 
 Tests are split by module under `tests/`, with shared fixtures in
@@ -344,7 +351,7 @@ and survive the layout helpers unchanged in content; a sample whose name
 starts with `golden` must also be reproduced byte for byte from its detected
 layout. Drop a file into the directory to add it to the suite.
 
-CI runs the same four commands on every push and pull request, across
+CI runs the same five commands on every push and pull request, across
 Linux, Windows and macOS on Python 3.9 to 3.13, and builds the wheel.
 
 ### Releasing

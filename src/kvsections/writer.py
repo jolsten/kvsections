@@ -45,7 +45,7 @@ def format_value(key: str, value: str) -> str:
 
 def pack_pairs(section: Section, available: int | None) -> list[str]:
     """Render a section's pairs as content lines of at most ``available`` columns."""
-    pairs = []
+    pairs: list[str] = []
     for key, value in section.section_fields.items():
         _check_name(key, f"key in section {section.section_name}")
         pairs.append(f"{key}={format_value(key, value)}")

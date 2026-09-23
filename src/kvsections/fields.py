@@ -9,6 +9,7 @@ from typing import (
     Generic,
     Literal,
     TypeVar,
+    cast,
     get_args,
     get_origin,
     overload,
@@ -27,7 +28,8 @@ class Converter(Generic[T]):
 
     ``parse`` turns the stored string into a value and ``format`` turns a
     value back into the string to store. Ready-made converters for common
-    encodings live in :mod:`kvsections.converters`.
+    encodings live in :mod:`kvsections.converters`. Annotate the two
+    callables and both mypy and pyright infer ``Converter[T]`` from them.
     """
 
     __slots__ = ("parse", "format", "name")
@@ -46,10 +48,15 @@ class Converter(Generic[T]):
         return f"Converter({self.name})" if self.name else "Converter(...)"
 
 
-def _converters_for(type_: Any) -> tuple[Any, Any]:
+def _converters_for(
+    type_: Converter[Any] | Callable[[str], Any] | None,
+) -> tuple[Any, Any]:
     """The default ``parse`` and ``format`` implied by a field type."""
     if isinstance(type_, Converter):
-        return type_.parse, type_.format
+        # pyright cannot rule out a callable that is also a Converter and
+        # would infer Converter[Unknown]; object is the honest item type.
+        converter = cast("Converter[object]", type_)
+        return converter.parse, converter.format
     if type_ is None or type_ is str:
         return None, None
     if type_ is bool:
@@ -130,7 +137,10 @@ class Field(Declaration, Generic[T]):
     the stored value is split on commas, each item converted with ``T``, and
     joined again on assignment. ``parse`` and ``format`` then apply to each
     item, an empty value is an empty list, and the list returned is a copy,
-    so assign a new list rather than mutating it.
+    so assign a new list rather than mutating it. A list of converted items
+    is ``Field(list[date], parse=YYYYMMDD.parse, format=YYYYMMDD.format)``;
+    ``list[YYYYMMDD]`` works at runtime but a type checker cannot read a
+    value as a type.
 
     A key the section lacks reads as ``default``, which is ``None`` unless
     given, so an absent key reads back as the ``None`` that removes it on
@@ -138,6 +148,13 @@ class Field(Declaration, Generic[T]):
     :class:`AttributeError` instead, for keys a file must carry; a required
     field cannot have a default. Assigning ``None`` removes the key, and so
     does ``del``, silently when the key is already absent.
+
+    The attribute's static type follows the declaration under both mypy and
+    pyright: ``Field(int)`` reads as ``int | None``, ``required=True`` or a
+    non-None ``default`` as ``int``. The overloads live on ``__new__``, which
+    also does the initialisation: pyright rejects a ``self: Field[T]``
+    annotation on ``__init__``, and mypy takes the constructor signature
+    from ``__init__`` whenever one exists, so the class defines neither.
 
     A field may only be declared on a :class:`Section` subclass, under an
     attribute that does not start with ``section_`` and that no base class
@@ -147,12 +164,17 @@ class Field(Declaration, Generic[T]):
 
     key: str
     attr: str
+    is_list: bool
+    parse: Any
+    format: Any
+    default: Any
+    required: bool
 
     # -- no type: the raw string -------------------------------------------
 
     @overload
-    def __init__(
-        self: Field[str | None],
+    def __new__(
+        cls,
         type: None = None,
         *,
         key: str | None = None,
@@ -160,35 +182,35 @@ class Field(Declaration, Generic[T]):
         format: Callable[[Any], str] | None = None,
         default: None = None,
         required: Literal[False] = False,
-    ) -> None: ...
+    ) -> Field[str | None]: ...
 
     @overload
-    def __init__(
-        self: Field[str],
+    def __new__(
+        cls,
         type: None = None,
         *,
         key: str | None = None,
         parse: None = None,
         format: Callable[[Any], str] | None = None,
         required: Literal[True],
-    ) -> None: ...
+    ) -> Field[str]: ...
 
     @overload
-    def __init__(
-        self: Field[str],
+    def __new__(
+        cls,
         type: None = None,
         *,
         key: str | None = None,
         parse: None = None,
         format: Callable[[Any], str] | None = None,
         default: str,
-    ) -> None: ...
+    ) -> Field[str]: ...
 
     # -- list[T] -----------------------------------------------------------
 
     @overload
-    def __init__(
-        self: Field[list[T] | None],
+    def __new__(
+        cls,
         type: type[list[T]],
         *,
         key: str | None = None,
@@ -196,35 +218,35 @@ class Field(Declaration, Generic[T]):
         format: Callable[[T], str] | None = None,
         default: None = None,
         required: Literal[False] = False,
-    ) -> None: ...
+    ) -> Field[list[T] | None]: ...
 
     @overload
-    def __init__(
-        self: Field[list[T]],
+    def __new__(
+        cls,
         type: type[list[T]],
         *,
         key: str | None = None,
         parse: Callable[[str], T] | None = None,
         format: Callable[[T], str] | None = None,
         required: Literal[True],
-    ) -> None: ...
+    ) -> Field[list[T]]: ...
 
     @overload
-    def __init__(
-        self: Field[list[T]],
+    def __new__(
+        cls,
         type: type[list[T]],
         *,
         key: str | None = None,
         parse: Callable[[str], T] | None = None,
         format: Callable[[T], str] | None = None,
         default: Iterable[T],
-    ) -> None: ...
+    ) -> Field[list[T]]: ...
 
     # -- a type, converter or parse callable -------------------------------
 
     @overload
-    def __init__(
-        self: Field[T | None],
+    def __new__(
+        cls,
         type: Converter[T] | Callable[[str], T],
         *,
         key: str | None = None,
@@ -232,35 +254,35 @@ class Field(Declaration, Generic[T]):
         format: Callable[[T], str] | None = None,
         default: None = None,
         required: Literal[False] = False,
-    ) -> None: ...
+    ) -> Field[T | None]: ...
 
     @overload
-    def __init__(
-        self: Field[T],
+    def __new__(
+        cls,
         type: Converter[T] | Callable[[str], T],
         *,
         key: str | None = None,
         parse: Callable[[str], T] | None = None,
         format: Callable[[T], str] | None = None,
         required: Literal[True],
-    ) -> None: ...
+    ) -> Field[T]: ...
 
     @overload
-    def __init__(
-        self: Field[T],
+    def __new__(
+        cls,
         type: Converter[T] | Callable[[str], T],
         *,
         key: str | None = None,
         parse: Callable[[str], T] | None = None,
         format: Callable[[T], str] | None = None,
         default: T,
-    ) -> None: ...
+    ) -> Field[T]: ...
 
     # -- parse= on its own -------------------------------------------------
 
     @overload
-    def __init__(
-        self: Field[T | None],
+    def __new__(
+        cls,
         type: None = None,
         *,
         key: str | None = None,
@@ -268,32 +290,32 @@ class Field(Declaration, Generic[T]):
         format: Callable[[T], str] | None = None,
         default: None = None,
         required: Literal[False] = False,
-    ) -> None: ...
+    ) -> Field[T | None]: ...
 
     @overload
-    def __init__(
-        self: Field[T],
+    def __new__(
+        cls,
         type: None = None,
         *,
         key: str | None = None,
         parse: Callable[[str], T],
         format: Callable[[T], str] | None = None,
         required: Literal[True],
-    ) -> None: ...
+    ) -> Field[T]: ...
 
     @overload
-    def __init__(
-        self: Field[T],
+    def __new__(
+        cls,
         type: None = None,
         *,
         key: str | None = None,
         parse: Callable[[str], T],
         format: Callable[[T], str] | None = None,
         default: T,
-    ) -> None: ...
+    ) -> Field[T]: ...
 
-    def __init__(
-        self,
+    def __new__(
+        cls,
         type: Any = None,
         *,
         key: str | None = None,
@@ -301,7 +323,7 @@ class Field(Declaration, Generic[T]):
         format: Any = None,
         default: Any = None,
         required: bool = False,
-    ) -> None:
+    ) -> Field[Any]:
         if isinstance(type, str):
             raise TypeError(
                 "the key is keyword-only: name the attribute after the key, "
@@ -315,6 +337,7 @@ class Field(Declaration, Generic[T]):
             key = key.upper()
         if required and default is not None:
             raise TypeError("a required field cannot have a default")
+        self = super().__new__(cls)
         # An empty key means "take it from the attribute" in __set_name__.
         self.key = key or ""
         self.attr = self.key
@@ -330,6 +353,7 @@ class Field(Declaration, Generic[T]):
         self.format = format
         self.default = default
         self.required = required
+        return self
 
     def __set_name__(self, owner: type, attr: str) -> None:
         super().__set_name__(owner, attr)

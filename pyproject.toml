@@ -22,12 +22,30 @@ classifiers = [
 ]
 
 [dependency-groups]
-dev = ["mypy", "pytest>=7", "pytest-cov", "ruff"]
+dev = [
+    "mypy",
+    "pyright>=1.1.414",
+    "pytest>=7",
+    "pytest-cov",
+    "ruff",
+]
 
 [tool.mypy]
 files = ["src"]
 python_version = "3.9"
 strict = true
+
+# Strict, so that pyright and mypy --strict must agree on the annotations.
+# Two rules are off on purpose: the library checks at runtime what the
+# annotations only promise (values smuggled into section_fields, non-string
+# subscripts), and single-underscore names are private to the package, not
+# to a module or class.
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.9"
+typeCheckingMode = "strict"
+reportUnnecessaryIsInstance = false
+reportPrivateUsage = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

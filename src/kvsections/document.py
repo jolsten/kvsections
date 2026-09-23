@@ -17,6 +17,10 @@ from .writer import format_document
 _D = TypeVar("_D", bound="Document")
 _T = TypeVar("_T")
 
+#: Typed empty defaults for the schema lookups on bases that declare none.
+_NO_TYPES: Mapping[str, type[BaseSection]] = {}
+_NO_ALIASES: Mapping[str, str] = {}
+
 __all__ = ["Document", "SectionField"]
 
 
@@ -131,23 +135,21 @@ class SectionField(Declaration):
                 )
             doc.document_add(value)
             return
-        text = issubclass(self.section_type, TextSection)
-        if text and not isinstance(value, str):
-            raise TypeError(
-                f"{self.attr} expects a str or a TextSection, "
-                f"not {type(value).__name__}"
-            )
-        if not text and not isinstance(value, Mapping):
+        if issubclass(self.section_type, TextSection):
+            if not isinstance(value, str):
+                raise TypeError(
+                    f"{self.attr} expects a str or a TextSection, "
+                    f"not {type(value).__name__}"
+                )
+            doc.document_add(self.section_type(self.name, value))
+            return
+        if not isinstance(value, Mapping):
             raise TypeError(
                 f"{self.attr} expects a mapping of fields or a Section, "
                 f"not {type(value).__name__}"
             )
-        if text:
-            doc.document_add(
-                cast("type[TextSection]", self.section_type)(self.name, value)
-            )
-        else:
-            doc.document_add(cast("type[Section]", self.section_type)(self.name, value))
+        fields = cast("Mapping[str, Any]", value)
+        doc.document_add(cast("type[Section]", self.section_type)(self.name, fields))
 
     def __delete__(self, doc: Document) -> None:
         del doc.document_sections[self.name]
@@ -188,7 +190,9 @@ def _collect_schema(
     """
     registry: dict[str, type[BaseSection]] = {}
     aliases: dict[str, str] = {}
-    for base in reversed(cls.__mro__[1:]):
+    # __mro__ is tuple[type, ...], which pyright reads as type[Unknown].
+    bases = cast("Sequence[type[object]]", cls.__mro__[1:])
+    for base in reversed(bases):
         if not issubclass(base, Document):
             for value in vars(base).values():
                 if isinstance(value, SectionField):
@@ -196,16 +200,20 @@ def _collect_schema(
                         f"{base.__name__}.{value.attr}: a SectionField belongs on a "
                         "Document subclass; on a plain mixin it is never registered"
                     )
-        _merge_schema(
-            registry,
-            aliases,
-            getattr(base, "document_section_types", {}),
-            getattr(base, "document_aliases", {}),
+        inherited_registry: Mapping[str, type[BaseSection]] = getattr(
+            base, "document_section_types", _NO_TYPES
         )
+        inherited_aliases: Mapping[str, str] = getattr(
+            base, "document_aliases", _NO_ALIASES
+        )
+        _merge_schema(registry, aliases, inherited_registry, inherited_aliases)
 
     own_registry: dict[str, type[BaseSection]] = {}
     own_aliases: dict[str, str] = {}
-    for alias, canonical in cls.__dict__.get("document_aliases", {}).items():
+    declared_aliases: Mapping[str, str] = cls.__dict__.get(
+        "document_aliases", _NO_ALIASES
+    )
+    for alias, canonical in declared_aliases.items():
         own_aliases[_normalize_key(alias)] = _normalize_key(canonical)
     for value in cls.__dict__.values():
         if isinstance(value, SectionField):
@@ -292,7 +300,7 @@ class Document:
         if isinstance(sections, Document):
             items = sections.document_sections.values()
         elif isinstance(sections, Mapping):
-            items = sections.values()
+            items = cast("Iterable[BaseSection]", sections.values())
         else:
             items = sections
         for section in items:
