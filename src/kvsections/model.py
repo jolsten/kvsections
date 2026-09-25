@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any, TypeVar, cast, overload
 
 from .fields import Declaration, Field
@@ -46,11 +46,17 @@ class BaseSection:
     Everything the library puts on a section is named ``section_...``, so
     that on a :class:`Section` subclass every other attribute can be a key.
     ``isinstance(x, BaseSection)`` is the test for "any kind of section".
+    ``section_init`` starts a section over, empty, in place.
     """
 
     #: The section's name, upper-case. A subclass may set it as a class
     #: attribute to supply the default when instantiated without a name.
     section_name: str
+
+    #: Set by ``SectionField`` on the empty section it hands out for a name
+    #: the document lacks: called with the section on its first write, so
+    #: that the section joins the document then and not before.
+    _section_join: Callable[[BaseSection], object] | None = None
 
     def __init__(self, name: str | None = None, /):
         if name is None:
@@ -60,6 +66,24 @@ class BaseSection:
                 f"{type(self).__name__} needs a name (or set section_name on the class)"
             )
         self.section_name = _normalize_key(name)
+
+    def _section_written(self) -> None:
+        """Run the pending join, if any; every write of content calls this."""
+        join = self._section_join
+        if join is not None:
+            self._section_join = None
+            join(self)
+
+    def section_init(self) -> None:
+        """Start the section over, as the constructor with no arguments would.
+
+        The content is dropped: every pair of a :class:`Section`, the text
+        of a :class:`TextSection`. A section a document handed out but does
+        not hold yet joins it, so ``doc.header.section_init()`` creates an
+        empty HEADER without importing the section class or replacing the
+        object you hold; a section the document holds keeps its place.
+        """
+        self._section_written()
 
 
 class Section(BaseSection):
@@ -78,8 +102,7 @@ class Section(BaseSection):
     that names a :class:`Field` goes through it, so ``HeaderSection(version=1)``
     stores the formatted value. Subclasses set ``section_name`` so the name
     can be omitted. A section is deliberately not a ``Mapping``: apart from
-    ``section_name`` and ``section_fields``, every attribute of a subclass
-    is a key.
+    the ``section_...`` names, every attribute of a subclass is a key.
     """
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -102,7 +125,8 @@ class Section(BaseSection):
     ):
         super().__init__(name)
         #: The raw pairs, keys upper-case, in file order. Writing to it
-        #: directly bypasses normalization.
+        #: directly bypasses normalization, and bypasses the join of a
+        #: section a document handed out but does not hold yet.
         self.section_fields: dict[str, str] = {}
         if fields is not None:
             pairs: Iterable[tuple[str, Any]]
@@ -133,6 +157,7 @@ class Section(BaseSection):
             self.section_fields.pop(key, None)
         else:
             self.section_fields[key] = _normalize_value(value)
+            self._section_written()
 
     def __delitem__(self, key: str) -> None:
         if not isinstance(key, str):
@@ -165,6 +190,11 @@ class Section(BaseSection):
         if not isinstance(key, str):
             return default
         return self.section_fields.get(_normalize_key(key), default)
+
+    def section_init(self) -> None:
+        """Drop every pair and start over; see :meth:`BaseSection.section_init`."""
+        self.section_fields.clear()
+        super().section_init()
 
     # -- misc --------------------------------------------------------------
 
@@ -213,6 +243,21 @@ class TextSection(BaseSection):
         if not isinstance(text, str):
             raise TypeError(f"text must be a str, not {type(text).__name__}")
         self.section_text = text
+
+    @property
+    def section_text(self) -> str:
+        """The text, lines joined with ``"\\n"``."""
+        return self._section_text
+
+    @section_text.setter
+    def section_text(self, text: str) -> None:
+        self._section_text = text
+        self._section_written()
+
+    def section_init(self) -> None:
+        """Drop the text and start over; see :meth:`BaseSection.section_init`."""
+        self._section_text = ""
+        super().section_init()
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, TextSection):

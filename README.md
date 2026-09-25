@@ -213,8 +213,7 @@ doc.schedule.days  # ['MON', 'TUE', 'WED', 'THU', 'FRI']
 doc["CONFIG"]["BUFFER"]  # sections you did not describe stay generic
 
 new = ExampleDocument()
-new.header = {}  # sections are created explicitly; reading never creates
-new.header.version = 7
+new.header.version = 7  # HEADER joins the document on its first write
 new.header.revision = 12  # written as REVISION=012
 new.schedule = ScheduleSection(interval=15, days=["MON", "FRI"])
 new.comments = "Built in code."
@@ -230,7 +229,8 @@ new.document_write("new.txt")
   `section_name` must agree with the attribute, or with the explicit name.
 - Nothing is reserved except two prefixes. Everything the library puts on a
   section starts with `section_` (`section_name`, `section_fields`,
-  `section_text`) and everything on a document starts with `document_`
+  `section_text`, `section_get`, `section_init`) and everything on a
+  document starts with `document_`
   (`document_warnings`, `document_read`, `document_dumps`,
   `document_reorder`, ...). Every other attribute of your subclass is a key
   or a section, `name`, `items` and `values` included. Declaring one under
@@ -255,9 +255,24 @@ new.document_write("new.txt")
   as `None`. `Field(int, required=True)` raises `AttributeError` instead,
   for a key the file must carry; a required field cannot have a default.
   Under mypy a plain field reads as `int | None` and a required or
-  defaulted one as `int`. Reading a declared section the document lacks
-  always raises, because a section is something you write into; assigning
-  `None` removes it.
+  defaulted one as `int`.
+- A declared section the document lacks reads as an empty section of its
+  class, which joins the document on its first write: `new.header.version
+  = 7` above creates `HEADER`. Until then the document is unchanged, so
+  `"HEADER" in new` is false and nothing is written out, and every read
+  gives the same section. Assigning `None` to a field removes a key rather
+  than storing one, so it does not make the section join; an empty value
+  or empty text does. `new.header.section_init()` creates the section at
+  once, empty, and on a section that exists it drops the content in place,
+  keeping the object you hold and its position. Assigning a section
+  object stores it, a text section also takes a string, as `new.comments`
+  above, and `None` removes it; anything else, a dict included, is a
+  `TypeError` that pyright and mypy flag as well. A section you were
+  handed or stored earlier is stale once another replaces it or it is
+  removed, so writing to it no longer reaches the document. The subscript
+  stays strict: `doc["HEADER"]` raises `KeyError` for a name the document
+  lacks. Under mypy and pyright `doc.header` is a `HeaderSection`, so
+  completion works before the section exists.
 - `Field(list[T])` splits the value on commas, converts each item with `T`,
   and joins on assignment; `parse` and `format` then apply per item. An
   empty value is an empty list and an absent key is `None`, like any other

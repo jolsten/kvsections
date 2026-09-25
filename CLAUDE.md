@@ -25,8 +25,12 @@ uv run --group dev pyright
   blank), `split_records`, the `TOKEN_CHARS`/`TEXT_CHARS` alphabets, `pack`
   (a `textwrap` wrapper), `plan_order`. Every other module builds on these so
   the rules exist once.
-- `model.py`: `BaseSection`, `Section` (subscriptable, iterates `(key, value)`
-  pairs, deliberately not a `Mapping`; `section_get` is the lenient lookup),
+- `model.py`: `BaseSection` (including `_section_join`, the hook a
+  `SectionField` sets on an empty section so that its first write adds it
+  to the document; `Section.__setitem__` and the `section_text` setter
+  run it), `Section` (subscriptable, iterates `(key, value)` pairs,
+  deliberately not a `Mapping`; `section_get` is the lenient lookup,
+  `section_init` empties a section in place and joins a pending one),
   `TextSection`, `convert_section`.
   `Section.__init_subclass__` and `TextSection.__init_subclass__` validate
   the descriptors declared on subclasses.
@@ -39,9 +43,12 @@ uv run --group dev pyright
   `ParseError`.
 - `reader.py`: tolerant parser. `writer.py`: strict renderer.
 - `document.py`: `Document` (subscriptable, iterates `(name, section)` pairs,
-  not a `Mapping`; `document_get(name, key=None)` is the lenient lookup),
-  `SectionField`, schema registry and alias merging, `document_reorder`, the
-  I/O methods; every library name on it starts with `document_`.
+  not a `Mapping`; `document_get(name, key=None)` is the lenient lookup;
+  `_document_pending` holds the empty sections handed out for absent
+  names), `SectionField` (generic in the section class, so `doc.header`
+  is typed as `HeaderSection`), schema registry and alias merging,
+  `document_reorder`, the I/O methods; every library name on it starts
+  with `document_`.
 - `layout.py`: `wrap_records` and `reorder_records`, text-level and
   byte-preserving. `converters.py`: ready-made parse/format pairs.
 - `__init__.py`: `loads`/`load`/`read`/`dumps`/`dump`/`write` are bound
@@ -98,10 +105,24 @@ Do not reverse these without asking.
     cannot have a default; the reader stays tolerant, required-ness is the
     schema author's call. `del section.field` on an absent key is a no-op,
     like assigning `None`. Reading a declared section the document lacks
-    always raises `AttributeError`, because `None` would turn
-    `doc.header.x = 1` into an obscure `NoneType` error. Reading never
-    mutates. Create with `doc.header = {}` or `doc.document_add(...)`;
-    section defaults do not exist, on purpose.
+    returns an empty section of its class that joins the document on its
+    first write (decided 2026-09-24, replacing the earlier
+    `AttributeError`), so `doc.header.x = 1` works on a fresh document
+    while a pure read still never mutates: the section waits in
+    `_document_pending` so repeated reads agree, `document_add` and
+    assigning `None` drop it and leave the handle stale, and assigning
+    `None` to a field, which removes rather than stores, does not make it
+    join (an empty value or empty text does). Direct writes to
+    `section_fields` bypass the join, as they bypass normalization.
+    `section.section_init()` (added the same day) empties a section in
+    place, as the constructor with no arguments would, and makes a pending
+    one join, so an empty section is created without an import and a
+    handle stays valid; it is argument-free because `section.attr = value`
+    is the readable, typed way to set values, and named `init` rather than
+    `clear` or `reset` because it reads right at creation and may later
+    take the constructor's arguments. `doc.header = HeaderSection(...)`
+    and `doc.document_add(...)` also create sections at once, with a new
+    object. Section defaults do not exist, on purpose.
 12. Section order is not part of the format; `document_reorder` and
     `document_order` are opt-in and the writer never reorders.
 13. Python 3.9 minimum, zero runtime dependencies, no pydantic/attrs, stdlib
@@ -117,7 +138,8 @@ Do not reverse these without asking.
     footgun.
 15. The library's own names live in prefixed namespaces, pydantic's
     `model_*` pattern: `section_*` on `Section`/`TextSection`
-    (`section_name`, `section_fields`, `section_text`) and `document_*` on
+    (`section_name`, `section_fields`, `section_text`, `section_get`,
+    `section_init`) and `document_*` on
     `Document` (`document_sections`, `document_warnings`, `document_add`,
     `document_reorder`, `document_loads/load/read/dumps/dump/write`,
     `document_canonical_name`, `document_section_type`,
@@ -150,6 +172,14 @@ Do not reverse these without asking.
     since `key in section` already is that test. The subscript stays strict
     at both levels, and nothing else from the old mapping interface comes
     back without a need.
+19. Assigning to a declared section takes a section object or `None`, and
+    for a text section also a string, because its content is one string
+    and that is the parallel of writing a pair section through its typed
+    attributes. Mapping assignment (`doc.header = {...}`) was removed on
+    2026-09-24: it stored values raw, so `{"revision": 12}` wrote
+    REVISION=12 where the field writes 012. Two `__set__` overloads, one
+    with a `self` type bound to `TextSection`, make mypy and pyright
+    reject a string on a pair section and a mapping anywhere.
 
 ## CI and releases
 

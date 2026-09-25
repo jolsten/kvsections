@@ -5,7 +5,7 @@ from __future__ import annotations
 import codecs
 import io
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from typing import IO, Any, ClassVar, TypeVar, cast, overload
+from typing import IO, Any, ClassVar, Generic, TypeVar, cast, overload
 
 from .errors import ParseWarning
 from .fields import Declaration, Field, check_declaration, name_from_attr
@@ -15,6 +15,8 @@ from .records import plan_order
 from .writer import format_document
 
 _D = TypeVar("_D", bound="Document")
+_S = TypeVar("_S", bound=BaseSection)
+_TS = TypeVar("_TS", bound=TextSection)
 _T = TypeVar("_T")
 
 #: Typed empty defaults for the schema lookups on bases that declare none.
@@ -31,7 +33,7 @@ def _decode(data: bytes, encoding: str, errors: str) -> str:
     return data.decode(encoding, errors)
 
 
-class SectionField(Declaration):
+class SectionField(Declaration, Generic[_S]):
     """Descriptor exposing one section of a :class:`Document` as an attribute.
 
     The section's name is the attribute's name in upper case, with one
@@ -45,11 +47,29 @@ class SectionField(Declaration):
     that name, so the reader instantiates it for matching sections, and
     registers each of ``aliases`` as another spelling of the same section.
 
-    Reading the attribute returns the section, or raises ``AttributeError``
-    if the document has none; reading never changes the document. Assigning
-    a section stores it; assigning a mapping (or a string, for text sections)
-    builds a new section from it, so ``doc.header = {}`` creates an empty
-    one. Assigning ``None`` removes it.
+    Reading the attribute returns the section. When the document has none
+    it returns an empty section of the declared class, which joins the
+    document on its first write, so ``doc.header.version = 7`` works on a
+    fresh document. Until then the document is unchanged: ``"HEADER" in
+    doc`` is false, nothing is written out, and every read returns that
+    same section. Assigning ``None`` to a field removes a key rather than
+    storing one, so it does not make the section join; an empty value or
+    empty text does.
+
+    To create a section at once, or start one over, call its
+    ``section_init``: ``doc.header.section_init()`` makes an empty HEADER
+    in place, without importing the class. Assigning a section stores it.
+    A text section also takes a string, its whole content, the way a pair
+    section takes values through its typed attributes; a mapping is
+    refused, since it would store values raw and skip the converters.
+    Assigning ``None`` removes the section. A section handed out or stored
+    earlier is stale once another replaces it or it is removed: writing to
+    it no longer reaches the document.
+
+    The static types agree with all of this under both mypy and pyright:
+    ``SectionField(HeaderSection)`` reads as ``HeaderSection`` and accepts
+    a ``HeaderSection`` or ``None``; ``SectionField(TextSection)`` also
+    accepts a ``str``.
 
     A section field may only be declared on a :class:`Document` subclass,
     under an attribute that does not start with ``document_`` and that no
@@ -57,9 +77,14 @@ class SectionField(Declaration):
     ``TypeError`` when the class is created.
     """
 
+    #: The declared section class. Declared without the type parameter so
+    #: that an ``isinstance`` check, which gives ``SectionField[Unknown]``
+    #: under pyright, still reads it as a section class.
+    section_type: type[BaseSection]
+
     def __init__(
         self,
-        section_type: type[BaseSection],
+        section_type: type[_S],
         *,
         name: str | None = None,
         aliases: Iterable[str] = (),
@@ -111,21 +136,38 @@ class SectionField(Declaration):
                 f"{self.name}; name the attribute after it or pass name={self.name!r}"
             )
 
+    @overload
+    def __get__(self, doc: None, owner: type) -> SectionField[_S]: ...
+
+    @overload
+    def __get__(self, doc: Document, owner: type | None = None) -> _S: ...
+
     def __get__(self, doc: Document | None, owner: type | None = None) -> Any:
         if doc is None:
             return self
         section = doc.document_sections.get(self.name)
-        if section is None:
-            raise AttributeError(
-                f"{type(doc).__name__}.{self.attr} ({self.name}) is not present; "
-                f"assign {self.attr} = {{}} to create it"
-            )
-        if isinstance(section, self.section_type):
-            return section
-        return doc.document_add(section)
+        if section is not None:
+            if isinstance(section, self.section_type):
+                return section
+            return doc.document_add(section)
+        pending = doc._document_pending.get(self.name)
+        if pending is None:
+            pending = self.section_type(self.name)
+            pending._section_join = doc.document_add
+            doc._document_pending[self.name] = pending
+        return pending
+
+    @overload
+    def __set__(
+        self: SectionField[_TS], doc: Document, value: _TS | str | None
+    ) -> None: ...
+
+    @overload
+    def __set__(self, doc: Document, value: _S | None) -> None: ...
 
     def __set__(self, doc: Document, value: Any) -> None:
         if value is None:
+            doc._document_forget_pending(self.name)
             doc.document_sections.pop(self.name, None)
             return
         if isinstance(value, BaseSection):
@@ -135,21 +177,13 @@ class SectionField(Declaration):
                 )
             doc.document_add(value)
             return
-        if issubclass(self.section_type, TextSection):
-            if not isinstance(value, str):
-                raise TypeError(
-                    f"{self.attr} expects a str or a TextSection, "
-                    f"not {type(value).__name__}"
-                )
+        if issubclass(self.section_type, TextSection) and isinstance(value, str):
             doc.document_add(self.section_type(self.name, value))
             return
-        if not isinstance(value, Mapping):
-            raise TypeError(
-                f"{self.attr} expects a mapping of fields or a Section, "
-                f"not {type(value).__name__}"
-            )
-        fields = cast("Mapping[str, Any]", value)
-        doc.document_add(cast("type[Section]", self.section_type)(self.name, fields))
+        kind = self.section_type.__name__
+        if issubclass(self.section_type, TextSection):
+            kind = f"str or {kind}"
+        raise TypeError(f"{self.attr} expects a {kind}, not {type(value).__name__}")
 
     def __delete__(self, doc: Document) -> None:
         del doc.document_sections[self.name]
@@ -296,6 +330,10 @@ class Document:
         #: Problems the reader tolerated, in file order. Empty for documents
         #: built in code.
         self.document_warnings: list[ParseWarning] = []
+        # The empty sections SectionField handed out for names the document
+        # lacks, so that repeated reads agree; a first write moves one into
+        # document_sections, a store or removal under its name forgets it.
+        self._document_pending: dict[str, BaseSection] = {}
         items: Iterable[BaseSection]
         if isinstance(sections, Document):
             items = sections.document_sections.values()
@@ -330,6 +368,8 @@ class Document:
 
         If a different class is registered for the name the section is
         converted to it; the stored (possibly converted) section is returned.
+        An empty section handed out for the name but not written yet is
+        forgotten, so writing to it no longer reaches the document.
         """
         if not isinstance(section, BaseSection):
             raise TypeError(f"{section!r} is not a section")
@@ -337,8 +377,15 @@ class Document:
         target = self.document_section_types.get(key)
         if target is not None:
             section = convert_section(section, target)
+        self._document_forget_pending(key)
         self.document_sections[key] = section
         return section
+
+    def _document_forget_pending(self, key: str) -> None:
+        """Drop the empty section handed out for ``key``, if any: it is stale now."""
+        pending = self._document_pending.pop(key, None)
+        if pending is not None:
+            pending._section_join = None
 
     # -- ordering ----------------------------------------------------------
 

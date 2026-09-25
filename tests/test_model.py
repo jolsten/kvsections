@@ -416,3 +416,15 @@ def test_inherited_fields_may_be_redeclared_and_mixed_in():
 
     assert WithMixin(created="x").created == "x"
     assert WithMixin.created.key == "CREATED"
+
+
+def test_section_init_empties_a_section_in_place():
+    header = HeaderSection(version=1, author="A")
+    header.section_init()
+    assert dict(header) == {} and header.section_name == "HEADER"
+    header.version = 2  # the same object carries on
+    assert dict(header) == {"VERSION": "2"}
+    text = TextSection("C", "hi")
+    text.section_init()
+    assert text == TextSection("C", "")
+    kvsections.BaseSection("B").section_init()  # nothing to drop

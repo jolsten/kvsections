@@ -52,8 +52,6 @@ def test_typed_read():
 
 def test_typed_write_and_formatting():
     doc = SampleDocument()
-    doc.header = {}
-    doc.schedule = {}
     doc.header.version = 7
     doc.header.revision = 12  # zero padded by the format
     doc.header.author = "EXAMPLE"
@@ -66,17 +64,84 @@ def test_typed_write_and_formatting():
     assert doc.schedule.counts == [1, 2, 3]
 
 
-def test_section_field_requires_explicit_creation():
+def test_absent_declared_section_reads_as_empty_and_joins_on_first_write():
     doc = SampleDocument()
-    assert "HEADER" not in doc
-    with pytest.raises(AttributeError, match="SampleDocument.header"):
-        _ = doc.header
-    assert "HEADER" not in doc  # reading never creates
-    doc.header = {}
     header = doc.header
-    assert isinstance(header, HeaderSection) and "HEADER" in doc
-    assert doc.header is header
-    doc.header = {"VERSION": "9"}
+    assert isinstance(header, HeaderSection) and header.section_name == "HEADER"
+    assert dict(header) == {}
+    assert doc.header is header  # the same section until it joins
+    assert "HEADER" not in doc and not doc.document_has("HEADER")
+    assert len(doc) == 0 and doc == SampleDocument()  # reading never creates
+    assert doc.document_dumps() == ""
+    assert header.author is None and header.owner == "NOBODY"
+    with pytest.raises(AttributeError, match="VERSION"):
+        _ = header.version  # required, and the section is empty
+    header.version = 7
+    assert "HEADER" in doc and doc["HEADER"] is header and doc.header is header
+    assert doc.header.version == 7
+    assert doc.document_dumps(width=None) == "HEADER VERSION=7\n"
+
+
+def test_writes_that_leave_a_section_empty_do_not_create_it():
+    doc = SampleDocument()
+    doc.header.author = None
+    del doc.header.owner
+    doc.header["X"] = None
+    assert "HEADER" not in doc
+    doc.header["X"] = ""  # an empty value is a value
+    assert "HEADER" in doc and doc["HEADER"]["X"] == ""
+
+
+def test_absent_text_section_reads_as_empty_and_joins_on_first_write():
+    doc = SampleDocument()
+    assert doc.comments.section_text == ""
+    assert "COMMENTS" not in doc
+    doc.comments.section_text = "free"
+    assert doc["COMMENTS"] == TextSection("COMMENTS", "free")
+    doc.comments.section_text += " text"
+    assert doc.comments.section_text == "free text"
+    doc = SampleDocument()
+    doc.comments.section_text = ""  # empty text is still text
+    assert doc["COMMENTS"] == TextSection("COMMENTS", "")
+
+
+def test_sections_join_in_the_order_they_are_written():
+    doc = SampleDocument()
+    header = doc.header  # handed out first, written second
+    doc.schedule.interval = 15
+    header.version = 1
+    assert names(doc) == ["SCHEDULE", "HEADER"]
+    assert doc.document_dumps(width=None) == (
+        "SCHEDULE INTERVAL=15\nHEADER   VERSION=1\n"
+    )
+
+
+def test_a_section_handed_out_earlier_is_stale_once_another_replaces_it():
+    doc = SampleDocument()
+    stale = doc.header
+    doc.header = HeaderSection(version=1)
+    assert doc.header is not stale
+    stale.revision = 2  # goes nowhere
+    assert dict(doc.header) == {"VERSION": "1"}
+    stale = doc.header
+    doc.document_add(HeaderSection(version=3))
+    stale.revision = 4
+    assert dict(doc.header) == {"VERSION": "3"}
+    stale = doc.header
+    doc.header = None  # removed, so the stored one is stale too
+    stale.revision = 5
+    assert "HEADER" not in doc
+    stale = doc.header  # empty again, and assigning None forgets it as well
+    doc.header = None
+    stale.version = 6
+    assert "HEADER" not in doc and doc.header is not stale
+
+
+def test_section_field_assignment():
+    doc = SampleDocument()
+    header = HeaderSection(version=9)
+    doc.header = header
+    assert doc.header is header and "HEADER" in doc
     assert doc.header.version == 9
     doc.header = HeaderSection(version=10)
     assert doc.header.version == 10
@@ -441,9 +506,11 @@ def test_documents_build_from_other_documents_and_mappings():
 
 def test_section_field_assignment_type_errors_name_the_attribute():
     doc = SampleDocument()
-    with pytest.raises(TypeError, match="header expects a mapping"):
-        doc.header = "not a mapping"
-    with pytest.raises(TypeError, match="comments expects a str"):
+    with pytest.raises(TypeError, match="header expects a HeaderSection, not str"):
+        doc.header = "not a section"
+    with pytest.raises(TypeError, match="header expects a HeaderSection, not dict"):
+        doc.header = {}  # a mapping would store values raw, past the converters
+    with pytest.raises(TypeError, match="comments expects a str or TextSection"):
         doc.comments = {"X": "1"}
 
 
@@ -487,3 +554,22 @@ def test_document_has_is_the_two_level_presence_test():
     assert doc.header.owner == "NOBODY"
     assert not doc.document_has("HEADER", "OWNER")
     assert doc.document_get("HEADER", "OWNER") is None
+
+
+def test_section_init_creates_an_empty_declared_section_in_place():
+    doc = SampleDocument()
+    header = doc.header
+    header.section_init()  # empty, but present now
+    assert "HEADER" in doc and doc.header is header and dict(header) == {}
+    assert doc.document_dumps(width=None) == "HEADER\n"
+    doc.schedule.interval = 15
+    header.version = 1
+    doc.header.section_init()  # emptied in place: same object, same position
+    assert doc.header is header and dict(header) == {}
+    assert names(doc) == ["HEADER", "SCHEDULE"]
+    doc.comments.section_init()
+    assert doc["COMMENTS"] == TextSection("COMMENTS", "")
+    stale = doc.header
+    doc.header = None
+    stale.section_init()  # stale, so it no longer reaches the document
+    assert "HEADER" not in doc
